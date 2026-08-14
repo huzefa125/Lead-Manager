@@ -1,8 +1,14 @@
-// Prisma schema — authentication + RBAC.
+// Prisma schema — authentication, RBAC, and the lead engine.
 //
 // Authorization is data-driven: roles and permissions are rows, not enum values
 // or code constants. A new module is added by inserting permission rows, with
 // no change to the authorization logic.
+//
+// The lead engine follows the same principle for its *pipeline*: sources and
+// stages are tenant-owned rows, so a customer reshapes their funnel without a
+// migration. What is fixed in enums is only the small set of things the code
+// must reason about — the channel a lead arrived through, and the kind of
+// activity that was logged.
 
 generator client {
   provider = "prisma-client-js"
@@ -29,6 +35,11 @@ model Organization {
 
   users User[]
 
+  leads          Lead[]
+  leadSources    LeadSource[]
+  leadStages     LeadStage[]
+  leadActivities LeadActivity[]
+
   @@index([isActive])
   @@map("organizations")
 }
@@ -52,6 +63,14 @@ model User {
   refreshTokens RefreshToken[]
   /// A user may hold several roles; their effective permissions are the union.
   roles UserRole[]
+
+  /// Leads this user owns. Deleting the user nulls the column rather than
+  /// deleting the leads — losing pipeline because a salesperson left would be
+  /// indefensible.
+  assignedLeads  Lead[]         @relation("LeadAssignee")
+  /// Timeline entries this user logged. Also nulled, not cascaded: the history
+  /// of what happened to a lead must outlive the account that recorded it.
+  leadActivities LeadActivity[] @relation("LeadActivityActor")
 
   @@index([organizationId])
   @@map("users")
@@ -162,4 +181,298 @@ model RolePermission {
   @@index([roleId])
   @@index([permissionId])
   @@map("role_permissions")
+}
+
+// ---------------------------------------------------------------------------
+// Lead engine
+// ---------------------------------------------------------------------------
+
+/// The channel a lead physically arrived through.
+///
+/// This is an enum, unlike almost everything else here, because code branches
+/// on it: the capture endpoint maps an inbound integration to a channel, and
+/// the default source catalogue is keyed by it. Customer-visible naming lives
+/// on `LeadSource.name`, which is editable — so renaming "Instagram" to
+/// "IG Ads" is a row update, not a migration.
+enum LeadChannel {
+  WEBSITE_FORM
+  WHATSAPP
+  INSTAGRAM
+  FACEBOOK
+  GOOGLE_ADS
+  LINKEDIN
+  EMAIL
+  PHONE
+  CRM_IMPORT
+  BOOKING
+  REFERRAL
+  MANUAL
+  OTHER
+
+  @@map("lead_channel")
+}
+
+/// Whether a stage represents work in progress or a terminal outcome.
+///
+/// Stages themselves are tenant-owned rows, so a customer can add
+/// "Negotiation" or "Proposal Review" freely. What the code needs to know is
+/// only whether landing on a stage closes the lead, and which way.
+enum LeadStageType {
+  OPEN
+  WON
+  LOST
+
+  @@map("lead_stage_type")
+}
+
+/// Denormalized from the lead's current stage type — see `Lead.status`.
+enum LeadStatus {
+  OPEN
+  WON
+  LOST
+
+  @@map("lead_status")
+}
+
+/// What happened. Types below `CREATED` are written by the system rather than
+/// by a user, and are what makes the timeline a complete audit rather than
+/// just a notes feed.
+enum LeadActivityType {
+  NOTE
+  CALL
+  EMAIL
+  WHATSAPP
+  SMS
+  MEETING
+  QUOTATION
+  FOLLOW_UP
+  TASK
+  CREATED
+  ASSIGNED
+  STAGE_CHANGED
+  STATUS_CHANGED
+
+  @@map("lead_activity_type")
+}
+
+/// Who moved. This is the field that separates "we reached out" from "they
+/// answered" — without it, first contact and first reply are indistinguishable
+/// and the funnel's most important step cannot be measured.
+enum LeadActivityDirection {
+  INBOUND
+  OUTBOUND
+  INTERNAL
+
+  @@map("lead_activity_direction")
+}
+
+/// A named origin for leads, owned by one tenant.
+///
+/// Sources are rows, not an enum, because the useful granularity is the
+/// customer's: "Google Ads — Brand" and "Google Ads — Competitor" are two
+/// sources over one channel, and only the customer knows that split. Defaults
+/// are provisioned per organization, one per channel.
+model LeadSource {
+  id String @id @default(uuid()) @db.Uuid
+
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Stable machine key, unique within the organization. Integrations address a
+  /// source by key so they need not know its uuid.
+  key         String
+  name        String
+  channel     LeadChannel
+  description String?
+  /// Inactive sources stop appearing in pickers but keep their history.
+  isActive    Boolean     @default(true) @map("is_active")
+  /// Provisioned by the system, one per channel. Cannot be deleted, because
+  /// capture falls back to it when an integration names no explicit source.
+  isSystem    Boolean     @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  leads Lead[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId, isActive])
+  @@index([organizationId, channel])
+  @@map("lead_sources")
+}
+
+/// One column of the pipeline, owned by one tenant.
+model LeadStage {
+  id String @id @default(uuid()) @db.Uuid
+
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  key         String
+  name        String
+  description String?
+  /// Left-to-right order in the board. Not unique — reordering a board would
+  /// otherwise need a temporary shuffle to dodge the constraint.
+  position    Int
+  type        LeadStageType @default(OPEN)
+  isSystem    Boolean       @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  leads Lead[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId, position])
+  @@map("lead_stages")
+}
+
+/// A prospect, and the record of everything that has happened to them.
+///
+/// The milestone columns (`firstContactAt` … `closedAt`) are the heart of this
+/// model. They are **write-once**: set the first time a lead reaches that point
+/// and never cleared, so they survive a lead being moved backwards through the
+/// pipeline. Current stage answers "where is this lead now"; milestones answer
+/// "how far did it ever get" — and only the second question can produce a
+/// funnel. See `src/leads/lead.milestones.ts`.
+model Lead {
+  id String @id @default(uuid()) @db.Uuid
+
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // --- Contact -------------------------------------------------------------
+  firstName String? @map("first_name")
+  lastName  String? @map("last_name")
+  email     String?
+  phone     String?
+  /// Kept apart from `phone`: the WhatsApp-reachable number is often a
+  /// different one, and messaging the wrong number is a silent dead end.
+  whatsapp  String?
+  company   String?
+  jobTitle  String? @map("job_title")
+  website   String?
+
+  // --- Attribution ---------------------------------------------------------
+  sourceId String     @map("source_id") @db.Uuid
+  source   LeadSource @relation(fields: [sourceId], references: [id])
+
+  campaign    String?
+  landingPage String? @map("landing_page")
+  utmSource   String? @map("utm_source")
+  utmMedium   String? @map("utm_medium")
+  utmCampaign String? @map("utm_campaign")
+  utmTerm     String? @map("utm_term")
+  utmContent  String? @map("utm_content")
+  referrer    String?
+
+  /// The id this lead carries in the system it came from. Unique per source, so
+  /// a webhook redelivered three times creates one lead rather than three.
+  externalId String? @map("external_id")
+
+  // --- Commercial ----------------------------------------------------------
+  /// Decimal, not float: money compared or summed in binary floating point
+  /// eventually reports a total nobody can reconcile.
+  estimatedValue Decimal? @map("estimated_value") @db.Decimal(14, 2)
+  currency       String   @default("INR")
+
+  // --- Pipeline ------------------------------------------------------------
+  stageId String    @map("stage_id") @db.Uuid
+  stage   LeadStage @relation(fields: [stageId], references: [id])
+
+  /// Denormalized from `stage.type`. One writer keeps them in step
+  /// (`applyStage` in lead.service.ts); it exists so funnel and list queries
+  /// filter on an indexed column instead of joining the stage table.
+  status LeadStatus @default(OPEN)
+
+  /// Why the lead was lost — only meaningful once `status` is LOST.
+  lostReason String? @map("lost_reason")
+  notes      String?
+
+  assignedToId String? @map("assigned_to_id") @db.Uuid
+  assignedTo   User?   @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  /// Who created the lead. A plain column, not a relation: it is audit data,
+  /// and the actor may be deleted long before the lead is.
+  createdById String? @map("created_by_id") @db.Uuid
+
+  // --- Journey milestones (write-once, monotonic) ---------------------------
+  /// When the lead actually arrived, which is not `createdAt` for an import or
+  /// a replayed webhook. Every other milestone is clamped to be no earlier
+  /// than this.
+  capturedAt       DateTime  @default(now()) @map("captured_at")
+  assignedAt       DateTime? @map("assigned_at")
+  firstContactAt   DateTime? @map("first_contact_at")
+  firstReplyAt     DateTime? @map("first_reply_at")
+  meetingBookedAt  DateTime? @map("meeting_booked_at")
+  quotationSentAt  DateTime? @map("quotation_sent_at")
+  /// Latest, not first — the others are write-once; this one tracks recency so
+  /// "no follow-up in 7 days" is answerable.
+  lastFollowUpAt   DateTime? @map("last_follow_up_at")
+  followUpCount    Int       @default(0) @map("follow_up_count")
+  lastActivityAt   DateTime? @map("last_activity_at")
+  closedAt         DateTime? @map("closed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  activities LeadActivity[]
+
+  /// Idempotent capture. Postgres treats NULLs as distinct, so leads without an
+  /// external id are unconstrained — which is what manual entry needs.
+  @@unique([sourceId, externalId])
+  @@index([organizationId, status])
+  @@index([organizationId, stageId])
+  @@index([organizationId, assignedToId])
+  @@index([organizationId, sourceId])
+  @@index([organizationId, capturedAt])
+  @@index([organizationId, email])
+  @@index([organizationId, phone])
+  @@map("leads")
+}
+
+/// One entry in a lead's timeline.
+///
+/// User-logged work and system events share this table on purpose: a timeline
+/// assembled from two sources has to be merged and paginated in application
+/// code, and would drift out of order the first time a clock disagreed.
+model LeadActivity {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Denormalized from the lead so tenant-scoped activity queries — "everything
+  /// my team did this week" — need no join.
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  leadId String @map("lead_id") @db.Uuid
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  type      LeadActivityType
+  direction LeadActivityDirection @default(INTERNAL)
+
+  subject String?
+  body    String?
+
+  /// When it happened, which is not when it was recorded — a call logged the
+  /// next morning must land on the day of the call or every funnel timing is
+  /// wrong.
+  occurredAt      DateTime @default(now()) @map("occurred_at")
+  durationMinutes Int?     @map("duration_minutes")
+
+  /// Structured payload for system events: the stage moved from and to, the
+  /// previous owner, the quotation amount. Deliberately open — a column per
+  /// event type would be mostly NULL.
+  metadata Json?
+
+  /// Null for webhook and system-generated entries, which have no human actor.
+  createdById String? @map("created_by_id") @db.Uuid
+  createdBy   User?   @relation("LeadActivityActor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([leadId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@index([organizationId, type])
+  @@index([createdById])
+  @@map("lead_activities")
 }

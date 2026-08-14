@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { leadPaths, leadSchemas } from './lead.paths';
 import { organizationPaths, organizationSchemas } from './organization.paths';
 import { rbacPaths, rbacSchemas } from './rbac.paths';
 
@@ -63,11 +64,27 @@ export const openApiDocument = {
   openapi: '3.0.3',
 
   info: {
-    title: 'Auth Service API',
-    version: '2.0.0',
+    title: 'Lead Manager API',
+    version: '3.0.0',
     description: [
-      'Authentication and role-based access control: registration, login, JWT access',
-      'tokens, database-backed rotating refresh tokens, and dynamic RBAC.',
+      'A multi-tenant lead manager: authentication, dynamic RBAC, and a lead engine that',
+      'captures from every channel and tracks the journey each lead travels.',
+      '',
+      '## The lead engine, in one paragraph',
+      '',
+      'Leads arrive through `POST /leads/capture` from website forms, WhatsApp, Instagram',
+      'and Facebook lead ads, Google Ads, LinkedIn, monitored inboxes, call logs, other',
+      'CRMs and booking pages. Each carries its source, campaign, landing page, UTM',
+      'parameters, contact details and estimated deal value. As the team works it, every',
+      'call, reply, meeting and quotation is logged against it, and each entry advances a',
+      '**write-once milestone**. `GET /leads/funnel` counts those milestones — captured →',
+      'contacted → replied → meeting → quotation → won — and names the gap losing the most',
+      'leads.',
+      '',
+      'Milestones exist separately from the current stage because a stage moves in both',
+      'directions. Drag a stalled deal back from "Quotation Sent" to "Follow-up" and a',
+      'stage-counted funnel reports the quotation was never sent — so the numbers shrink',
+      'every time a salesperson is honest about where a deal really is.',
       '',
       '## Multi-tenancy',
       '',
@@ -188,6 +205,16 @@ export const openApiDocument = {
       name: 'Users',
       description: 'List users and manage their role assignments. A user may hold several roles.',
     },
+    {
+      name: 'Leads',
+      description:
+        'Capture from every channel, the journey each lead travels, and the funnel built from it. A lead\'s *stage* is where it is now and moves in both directions; its *journey* milestones are write-once and only move forward — the funnel counts the second, not the first.',
+    },
+    {
+      name: 'Lead pipeline',
+      description:
+        'Sources and stages. Both are tenant-owned rows rather than enum values, so a customer reshapes their pipeline without a migration. Defaults are provisioned on first use.',
+    },
     { name: 'Health', description: 'Liveness and readiness probes.' },
   ],
 
@@ -266,6 +293,7 @@ export const openApiDocument = {
 
       ...rbacSchemas,
       ...organizationSchemas,
+      ...leadSchemas,
 
       AuthSession: {
         type: 'object',
@@ -819,6 +847,7 @@ export const openApiDocument = {
 
     ...organizationPaths,
     ...rbacPaths,
+    ...leadPaths,
 
     '/': {
       get: {

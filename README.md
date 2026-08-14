@@ -1,10 +1,19 @@
-# Auth Service
+# Lead Manager API
 
-Authentication foundation built on **Node.js + Express 5 + TypeScript (strict) + PostgreSQL + Prisma**.
+Multi-tenant lead management built on **Node.js + Express 5 + TypeScript (strict) + PostgreSQL +
+Prisma**.
 
-Registration, login, JWT access tokens, database-backed refresh tokens, a protected `/me`
-endpoint, and logout. RBAC is deliberately **not** implemented — the schema and token payload
-are shaped so it can be added without a breaking change.
+Three layers, each documented in its own section below:
+
+| Layer | What it does |
+|---|---|
+| **Auth** | Registration, login, JWT access tokens, database-backed rotating refresh tokens, logout |
+| **Organizations + RBAC** | Every user belongs to one tenant; roles and permissions are database rows, not code |
+| **Lead engine** | Capture from every channel, per-lead journey tracking, and a funnel that names where the journey breaks |
+
+If you read only one thing, read [Lead journey tracking](#lead-journey-tracking) — it explains why
+a lead's *stage* and its *journey* are two different things, which is the one design decision the
+rest of the module follows from.
 
 ---
 
@@ -169,6 +178,27 @@ Base URL `/api`. Every response — success or failure — uses one envelope:
 | `PUT` | `/api/users/:id/roles` | Bearer | `role.assign` | Replace a user's roles |
 | `POST` | `/api/users/:id/roles` | Bearer | `role.assign` | Assign roles |
 | `DELETE` | `/api/users/:id/roles` | Bearer | `role.assign` | Remove roles |
+| `POST` | `/api/leads/capture` | Bearer | `lead.capture` | **Integration entry point** — capture from any channel |
+| `GET` | `/api/leads/funnel` | Bearer | `lead.view` | The journey funnel + where it breaks |
+| `GET` | `/api/leads` | Bearer | `lead.view` | List, filter, search |
+| `POST` | `/api/leads` | Bearer | `lead.create` | Create manually or by import |
+| `GET` | `/api/leads/:id` | Bearer | `lead.view` | Get a lead |
+| `PATCH` | `/api/leads/:id` | Bearer | `lead.update` | Edit details — **not** stage, owner or status |
+| `DELETE` | `/api/leads/:id` | Bearer | `lead.delete` | Delete a lead and its timeline |
+| `PUT` | `/api/leads/:id/assignment` | Bearer | `lead.assign` | Assign / unassign |
+| `PUT` | `/api/leads/:id/stage` | Bearer | `lead.update` | Move between stages |
+| `GET` | `/api/leads/:id/timeline` | Bearer | `lead.view` | Complete history |
+| `POST` | `/api/leads/:id/activities` | Bearer | `lead.update` | Log a call, email, meeting, quotation |
+| `GET` | `/api/lead-sources` | Bearer | `lead_source.view` | List sources |
+| `POST` | `/api/lead-sources` | Bearer | `lead_source.create` | Add a source |
+| `GET` | `/api/lead-sources/:id` | Bearer | `lead_source.view` | Get a source |
+| `PATCH` | `/api/lead-sources/:id` | Bearer | `lead_source.update` | Rename / deactivate |
+| `DELETE` | `/api/lead-sources/:id` | Bearer | `lead_source.delete` | Delete a source |
+| `GET` | `/api/lead-stages` | Bearer | `lead_stage.view` | List pipeline stages |
+| `POST` | `/api/lead-stages` | Bearer | `lead_stage.create` | Add a stage |
+| `GET` | `/api/lead-stages/:id` | Bearer | `lead_stage.view` | Get a stage |
+| `PATCH` | `/api/lead-stages/:id` | Bearer | `lead_stage.update` | Rename / reorder |
+| `DELETE` | `/api/lead-stages/:id` | Bearer | `lead_stage.delete` | Delete a stage |
 | `GET` | `/health` | — | — | Liveness |
 | `GET` | `/health/ready` | — | — | Readiness (checks Postgres) |
 
@@ -262,6 +292,12 @@ src/
 ├── organizations/   tenants — repository, service, controller, routes
 ├── rbac/            roles, permissions, user-role assignment
 │                    permission.constants.ts — the catalogue (edit to add a module)
+├── leads/           the lead engine
+│                    lead.milestones.ts  — the journey rules + funnel maths (pure)
+│                    lead.service.ts     — leads, assignment, stage moves
+│                    activity.service.ts — the timeline
+│                    catalog.service.ts  — sources and stages
+│                    funnel.service.ts   — reporting
 ├── users/           repository, service, serializer, types
 ├── middleware/      authenticate, authorize, validate, error-handler,
 │                    rate-limit, request-id, not-found
@@ -391,6 +427,12 @@ correct.
 | `acme` | `admin@example.com`, `manager@example.com`, `user@example.com` |
 | `globex` | `globex.admin@example.com` — a full admin, still confined to Globex |
 
+The seed also gives `acme` a **demo pipeline of 127 leads** shaped like a real funnel — 127
+captured, 89 contacted, 54 replied, 31 meetings, 18 quotations, 7 won, spread over 90 days and
+across every source, with a quarter left unassigned. A funnel where every lead converts
+demonstrates nothing; the interesting number is the 38 that are never contacted at all. Sign in as
+`admin@example.com` and call `GET /api/leads/funnel`.
+
 ---
 
 ## RBAC
@@ -496,9 +538,18 @@ an administrator knows exactly what to grant.
 | Role | Permissions |
 |---|---|
 | `super_admin` | `*` — the only role with `organization.manage_all` |
-| `admin` | `organization.view/update`, `user.*`, `employee.*`, `department.*`, `role.view`, `role.assign`, `permission.view` — **confined to its own tenant** |
-| `manager` | `organization.view`, `user.view`, `employee.view/create/update`, `department.view` |
-| `user` | `employee.view`, `department.view` |
+| `admin` | `organization.view/update`, `user.*`, `employee.*`, `department.*`, `lead.*`, `lead_source.*`, `lead_stage.*`, `role.view`, `role.assign`, `permission.view` — **confined to its own tenant** |
+| `manager` | `organization.view`, `user.view`, `employee.view/create/update`, `department.view`, `lead.view/create/update/assign`, `lead_source.view`, `lead_stage.view` |
+| `user` | `employee.view`, `department.view`, `lead.view`, `lead_source.view`, `lead_stage.view` |
+
+`manager` is the **salesperson role**: it works the pipeline but cannot reshape it, because renaming
+a stage rewrites how every report in the organization reads. `user` stays read-only; a salesperson
+who must log calls needs `manager`, or a custom role with `lead.update` — created through the API,
+since roles are rows.
+
+Note that `lead.*` covers neither `lead_source.view` nor `lead_stage.view`: matching is on the
+parsed resource, not a string prefix. That is what lets "work the pipeline" and "configure the
+pipeline" be granted separately.
 
 `admin` deliberately excludes `organization.manage_all`, which is what keeps a tenant
 administrator inside their own organization while still being a full admin of it.
@@ -534,13 +585,248 @@ caller cannot use. It is not a control. Every check is enforced server-side, and
 
 ---
 
+## Lead Engine
+
+```
+Organization ──< LeadSource ──< Lead >── LeadStage
+                                 │
+                                 ├──< LeadActivity   (the timeline)
+                                 └──── assignedTo → User
+```
+
+### Lead capture — the unified inbox
+
+One endpoint, every channel:
+
+```http
+POST /api/leads/capture
+Authorization: Bearer <token>
+
+{
+  "channel": "WHATSAPP",
+  "firstName": "Ravi",
+  "phone": "+91 90000 11111",
+  "company": "Vertex Logistics",
+  "externalId": "wa-88213",
+  "campaign": "diwali-2026",
+  "utmSource": "whatsapp",
+  "utmMedium": "social",
+  "landingPage": "https://acme.example.com/quote"
+}
+```
+
+Channels: `WEBSITE_FORM` `WHATSAPP` `INSTAGRAM` `FACEBOOK` `GOOGLE_ADS` `LINKEDIN` `EMAIL`
+`PHONE` `CRM_IMPORT` `BOOKING` `REFERRAL` `MANUAL` `OTHER`.
+
+**Capture cannot set a stage, an owner or a status.** Zod strips them. Every captured lead starts
+at the top of the pipeline, because the funnel's first number only means "leads received" if
+nothing can enter halfway down.
+
+**Capture will not create the same person twice.** Three outcomes, reported in `outcome`:
+
+| `outcome` | Status | When |
+|---|---|---|
+| `created` | 201 | A new lead |
+| `duplicate_external_id` | 200 | Same source + `externalId` — a redelivered webhook |
+| `merged_into_open_lead` | 200 | An open lead already has this email or phone |
+
+A merge fills blanks only — a later form that omits the company must not erase the company someone
+typed by hand — and is recorded as an **internal note, not an inbound reply**. Filling a form again
+is not a response to your outreach, and counting it as one would inflate the reply rate.
+
+Closed leads are excluded from duplicate matching: someone who was lost six months ago and comes
+back is a new opportunity, not a continuation of the old one.
+
+### Lead source tracking
+
+Every lead carries its full attribution:
+
+| | |
+|---|---|
+| **Source** | A tenant-owned row, not an enum — `google_ads_brand` and `google_ads_competitor` are two sources over one channel |
+| **Channel** | The enum above, on the source |
+| **Campaign** | Free text |
+| **Landing page** | Full URL |
+| **UTM** | `source` `medium` `campaign` `term` `content` |
+| **Referrer** | Full URL |
+| **Captured at** | When the lead *arrived* — not when the row was written, so imports and replayed webhooks land on the right day |
+| **Assigned salesperson** | Nullable; `SET NULL` on user deletion, so a salesperson leaving never deletes pipeline |
+| **Company + contact** | Name, email, phone, WhatsApp (kept apart from phone — often a different number), job title, website |
+| **Estimated deal value** | `DECIMAL(14,2)` + ISO currency. Decimal, not float: money summed in binary floating point eventually reports a total nobody can reconcile |
+
+Sources and stages are **provisioned per organization on first use** (`ensureDefaults`), and
+backfilled for existing tenants by the migration. `createMany({ skipDuplicates })` against the
+`(organization_id, key)` unique index makes it idempotent and race-safe — two simultaneous first
+captures cannot produce two sets of stages.
+
+### Lead journey tracking
+
+This is the core of the module.
+
+```
+Lead Created → Assigned → First Contact → Reply Received → Meeting Booked
+             → Quotation Sent → Follow-up → Won / Lost
+```
+
+**A lead's stage and its journey are two different things.**
+
+*Stage* is where the lead is now, and it moves in **both** directions — a deal that reaches
+"Quotation Sent" and goes quiet gets dragged back to "Follow-up". *Journey milestones* are
+write-once columns on the lead, stamped the first time it reaches each point and never cleared.
+
+That distinction is the whole design. A funnel counted from current stage reports that the
+quotation was never sent the moment a salesperson honestly moves a stalled deal backwards — so the
+numbers shrink as the data gets more accurate. Milestones make the count monotonic:
+
+| Column | Set by |
+|---|---|
+| `capturedAt` | Capture. Every other milestone is clamped to be no earlier than this |
+| `assignedAt` | First owner. **Not cleared by unassigning** — the lead did once have an owner |
+| `firstContactAt` | An **outbound** call/email/WhatsApp/SMS, or a follow-up |
+| `firstReplyAt` | An **inbound** call/email/WhatsApp/SMS |
+| `meetingBookedAt` | A `MEETING` activity, or the `meeting` stage |
+| `quotationSentAt` | A `QUOTATION` activity, the `quotation` stage, or winning |
+| `lastFollowUpAt` | Latest, not first — this one tracks recency, so "no follow-up in 7 days" is answerable |
+| `closedAt` | Won or lost. Cleared on reopen |
+
+**`direction` is required, never inferred.** It carries the entire distinction between "we reached
+out" and "they answered". Without it those two are the same row and the reply rate — the funnel's
+most diagnostic number — cannot be computed at all.
+
+**Reaching a milestone backfills every earlier one.** A lead can book a meeting straight off a
+Calendly link with no logged call. Recording only `meetingBookedAt` would make meetings outnumber
+contacts, and a funnel that goes *up* in the middle cannot be read — a negative drop-off is not a
+number anyone can act on. So the chain is monotonic by construction, not by hoping the data
+behaves.
+
+A `NOTE` is deliberately excluded: writing a note to yourself is not contact, and counting it would
+inflate the top of the funnel with work that never left the building.
+
+The rules live in [`src/leads/lead.milestones.ts`](src/leads/lead.milestones.ts) — pure functions
+over plain values, no Prisma, no I/O. They are the part of this module most likely to be argued
+about, and an argument is only settled by a test that runs in milliseconds.
+
+### Lead timeline
+
+```http
+GET /api/leads/{id}/timeline?order=asc
+GET /api/leads/{id}/timeline?excludeSystem=true    # only human-logged work
+```
+
+User-logged work and system events share one table. A timeline assembled from two sources has to
+be merged and paginated in application code, and would drift out of order the first time a clock
+disagreed.
+
+| Logged by a user | Written by the system |
+|---|---|
+| `NOTE` `CALL` `EMAIL` `WHATSAPP` `SMS` `MEETING` `QUOTATION` `FOLLOW_UP` `TASK` | `CREATED` `ASSIGNED` `STAGE_CHANGED` `STATUS_CHANGED` |
+
+The system types are **rejected by the validation schema** — a client able to forge a
+`STAGE_CHANGED` entry would make the audit trail worthless. System entries carry structured
+`metadata`: the stage moved from and to, the previous and new owner.
+
+**Every mutation writes its timeline entry in the same transaction as the change.** If the pipeline
+moved and nobody can see who moved it or when, the history is decoration rather than an audit —
+and the funnel built on top of it cannot be trusted either.
+
+Logging an activity returns the milestones it moved:
+
+```jsonc
+// POST /api/leads/{id}/activities  { "type": "CALL", "direction": "OUTBOUND" }
+{ "activity": { ... }, "lead": { ... }, "advanced": ["firstContactAt"] }
+```
+
+so the UI can say "this lead is now counted as contacted" instead of leaving the user to spot a
+number changing elsewhere on the screen.
+
+### The funnel — where the journey breaks
+
+```http
+GET /api/leads/funnel?capturedFrom=2026-06-01&groupBy=source
+```
+
+```jsonc
+{
+  "totals": { "captured": 127, "won": 7, "lost": 36, "assigned": 103, "unassigned": 24,
+              "winRate": 0.1628, "wonValue": 812000 },
+  "funnel": [
+    { "key": "captured",  "label": "Leads received",  "count": 127, "droppedFromPrevious": 0  },
+    { "key": "contacted", "label": "Contacted",       "count": 89,  "droppedFromPrevious": 38 },
+    { "key": "replied",   "label": "Replied",         "count": 54,  "droppedFromPrevious": 35 },
+    { "key": "meeting",   "label": "Meetings booked", "count": 31,  "droppedFromPrevious": 23 },
+    { "key": "quotation", "label": "Quotations sent", "count": 18,  "droppedFromPrevious": 13 },
+    { "key": "won",       "label": "Closed won",      "count": 7,   "droppedFromPrevious": 11 }
+  ],
+  "break": {
+    "fromLabel": "Leads received", "toLabel": "Contacted", "dropped": 38, "dropOffRate": 0.2992,
+    "summary": "38 of 127 leads (29.9%) stop between \"Leads received\" and \"Contacted\" — the largest loss in the journey."
+  },
+  "responseTimes": { "medianHoursToFirstContact": 8.2, "medianHoursToFirstReply": 19.5 }
+}
+```
+
+**`break` is ranked by leads lost, not by rate.** A 100% drop-off across the two leads that reached
+quotation is real but unactionable next to 38 leads lost before anyone called them. Ties go to the
+earlier step, since fixing an early leak also feeds every step after it. It is `null` when nothing
+was lost anywhere — including the empty case, where inventing a break would be worse than saying
+nothing.
+
+**Assignment is reported in `totals`, not as a funnel step.** A lead can be worked while unassigned
+and assigned while untouched, so folding it into the chain would let a bookkeeping change fabricate
+progress. `unassigned` is a real leak that the six steps do not show.
+
+**`winRate` divides by leads that reached a decision** (won ÷ (won + lost)), not by everything
+captured — otherwise it falls every time marketing has a good month.
+
+`groupBy=source|channel|owner` splits the same report, each group with its own break.
+
+**Cost.** The funnel is four indexed aggregates over the milestone columns. Nothing replays the
+activity table, so the cost of a report does not grow with how hard the team has been working.
+
+### Other queries worth knowing
+
+```http
+GET /api/leads?unassigned=true                    # nobody owns these
+GET /api/leads?staleForDays=7&status=OPEN         # untouched for a week — the manager's queue
+GET /api/leads?channel=WHATSAPP,INSTAGRAM         # comma-separated filters
+GET /api/leads?search=kestrel                     # name, company, email, phone
+GET /api/leads?sort=estimatedValue&order=desc
+```
+
+An unknown value inside a list filter is a **422, not a silent drop** — quietly ignoring
+`status=WON,MAYBE` would return a wider result set than was asked for.
+
+### Lead engine safety rails
+
+- **Tenancy has no cross-tenant mode.** Unlike organizations, the lead engine is always confined to
+  `user.organizationId`, even for Super Admin. A merged pipeline across tenants is not a view
+  anybody wants — the stages do not line up, and a funnel over two companies' leads is meaningless.
+- **A lead nobody can be reached at is rejected** — at least one of email, phone or whatsapp. The
+  alternative is a row that sits in the pipeline forever, is counted in every funnel, and never
+  converts.
+- **Marking a lead lost requires a reason.** It is the one field that turns "we lose 40% at
+  quotation" into something a team can act on.
+- **`PATCH /leads/:id` cannot move the pipeline.** Stage, status, owner and every milestone are
+  absent from the schema; each has a dedicated endpoint that writes a timeline entry.
+- **Assignees are tenant-checked.** Assigning to a user id from another tenant returns 422 —
+  identical to a user id that does not exist, so it confirms nothing.
+- **Sources and stages cannot be deleted while in use** (409), and system ones cannot be deleted at
+  all. A source's `key` and `channel` are immutable; a stage's `type` is immutable — flipping one
+  from `OPEN` to `WON` would silently reclassify every lead in it as revenue.
+- **Deleting a user nulls their leads rather than cascading.** Losing pipeline because a
+  salesperson left would be indefensible.
+- **Capture is idempotent** on `(sourceId, externalId)`, enforced by a unique index. Postgres treats
+  NULLs as distinct, so manually entered leads are unconstrained.
+
+---
+
 ## Testing
 
 ```bash
-npm test                  # 77 unit tests, no database needed
+npm test                  # 142 unit tests, no database needed
 
 npm run test:db:setup     # one-time: migrate + seed the separate auth_test database
-npm run test:integration  # 105 HTTP tests against a real Postgres
+npm run test:integration  # HTTP suite against a real Postgres
 ```
 
 Integration tests delete rows, so they run against a **separate `auth_test` database** —
@@ -550,6 +836,13 @@ Integration tests delete rows, so they run against a **separate `auth_test` data
 The unit suite covers JWT signing/verification (including forged, tampered, expired,
 wrong-audience and wrong-type tokens), bcrypt behaviour, opaque token generation and parsing,
 Zod schemas, and the serializer's exclusion of `passwordHash`.
+
+It also pins the **journey engine** ([lead-milestones.test.ts](tests/unit/lead-milestones.test.ts)):
+that an outbound call is contact and an inbound one is a reply, that a note is neither, that later
+milestones backfill earlier ones, that a milestone is never rewritten, that moving a lead backwards
+erases nothing, and that the funnel reports 127 → 89 → 54 → 31 → 18 → 7 with the right loss at each
+step. Everything the product shows about a funnel is derived from those functions, so a bug there
+is a bug in every number on the screen.
 
 The integration suite drives the real Express app with supertest and asserts the security
 properties directly — that the refresh token is absent from the response body, that only its

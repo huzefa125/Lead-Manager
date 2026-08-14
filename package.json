@@ -1,8 +1,8 @@
 {
-  "name": "auth-service",
-  "version": "1.0.0",
+  "name": "lead-manager-api",
+  "version": "3.0.0",
   "private": true,
-  "description": "Production-ready authentication foundation (Express + TypeScript + PostgreSQL + Prisma)",
+  "description": "Multi-tenant lead manager: auth, dynamic RBAC, and a lead engine with journey tracking (Express + TypeScript + PostgreSQL + Prisma)",
   "main": "dist/server.js",
   "engines": {
     "node": ">=20.0.0"

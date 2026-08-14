@@ -36,6 +36,14 @@ export const Resource = {
   PERMISSION: 'permission',
   EMPLOYEE: 'employee',
   DEPARTMENT: 'department',
+  LEAD: 'lead',
+  /**
+   * Separate resources, not operations on `lead`, so configuring the pipeline
+   * can be granted apart from working it. Note that `lead.*` does not cover
+   * these — matching is on the parsed resource, not a string prefix.
+   */
+  LEAD_SOURCE: 'lead_source',
+  LEAD_STAGE: 'lead_stage',
 } as const;
 
 /** Builds `resource.operation`, so the format is never hand-typed. */
@@ -70,6 +78,30 @@ export const Permissions = {
   PERMISSION_CREATE: permission(Resource.PERMISSION, Operation.CREATE),
   PERMISSION_UPDATE: permission(Resource.PERMISSION, Operation.UPDATE),
   PERMISSION_DELETE: permission(Resource.PERMISSION, Operation.DELETE),
+
+  LEAD_VIEW: permission(Resource.LEAD, Operation.VIEW),
+  LEAD_CREATE: permission(Resource.LEAD, Operation.CREATE),
+  /** Also covers moving a lead between stages and logging activity on it. */
+  LEAD_UPDATE: permission(Resource.LEAD, Operation.UPDATE),
+  LEAD_DELETE: permission(Resource.LEAD, Operation.DELETE),
+  /** Separated from `lead.update`: deciding who owns a lead is a manager's call. */
+  LEAD_ASSIGN: permission(Resource.LEAD, 'assign'),
+  /**
+   * The integration endpoint. Held by the service accounts that forward leads
+   * from website forms, ad platforms and inboxes — which should be able to
+   * create leads and nothing else.
+   */
+  LEAD_CAPTURE: permission(Resource.LEAD, 'capture'),
+
+  LEAD_SOURCE_VIEW: permission(Resource.LEAD_SOURCE, Operation.VIEW),
+  LEAD_SOURCE_CREATE: permission(Resource.LEAD_SOURCE, Operation.CREATE),
+  LEAD_SOURCE_UPDATE: permission(Resource.LEAD_SOURCE, Operation.UPDATE),
+  LEAD_SOURCE_DELETE: permission(Resource.LEAD_SOURCE, Operation.DELETE),
+
+  LEAD_STAGE_VIEW: permission(Resource.LEAD_STAGE, Operation.VIEW),
+  LEAD_STAGE_CREATE: permission(Resource.LEAD_STAGE, Operation.CREATE),
+  LEAD_STAGE_UPDATE: permission(Resource.LEAD_STAGE, Operation.UPDATE),
+  LEAD_STAGE_DELETE: permission(Resource.LEAD_STAGE, Operation.DELETE),
 } as const;
 
 /** Role keys that carry special meaning in code. */
@@ -150,6 +182,21 @@ export const PERMISSION_CATALOGUE: PermissionSeed[] = [
   ...crudFor(Resource.PERMISSION, 'permissions'),
   ...crudFor(Resource.EMPLOYEE, 'employees'),
   ...crudFor(Resource.DEPARTMENT, 'departments'),
+  ...crudFor(Resource.LEAD, 'leads'),
+  {
+    action: Permissions.LEAD_ASSIGN,
+    resource: Resource.LEAD,
+    operation: 'assign',
+    description: 'Assign leads to salespeople',
+  },
+  {
+    action: Permissions.LEAD_CAPTURE,
+    resource: Resource.LEAD,
+    operation: 'capture',
+    description: 'Submit leads through the capture endpoint (integrations)',
+  },
+  ...crudFor(Resource.LEAD_SOURCE, 'lead sources'),
+  ...crudFor(Resource.LEAD_STAGE, 'pipeline stages'),
 ];
 
 export interface RoleSeed {
@@ -186,6 +233,11 @@ export const ROLE_CATALOGUE: RoleSeed[] = [
       `${Resource.USER}.${WILDCARD}`,
       `${Resource.EMPLOYEE}.${WILDCARD}`,
       `${Resource.DEPARTMENT}.${WILDCARD}`,
+      // Three separate wildcards: `lead.*` covers neither of the other two,
+      // since matching is on the parsed resource rather than a string prefix.
+      `${Resource.LEAD}.${WILDCARD}`,
+      `${Resource.LEAD_SOURCE}.${WILDCARD}`,
+      `${Resource.LEAD_STAGE}.${WILDCARD}`,
       Permissions.ROLE_VIEW,
       Permissions.ROLE_ASSIGN,
       Permissions.PERMISSION_VIEW,
@@ -194,7 +246,8 @@ export const ROLE_CATALOGUE: RoleSeed[] = [
   {
     name: 'manager',
     displayName: 'Manager',
-    description: 'Manages employees and views departments.',
+    description:
+      'Works the pipeline: creates leads, logs activity, moves stages and assigns owners. Cannot reshape the pipeline itself.',
     permissions: [
       Permissions.ORGANIZATION_VIEW,
       Permissions.USER_VIEW,
@@ -202,6 +255,14 @@ export const ROLE_CATALOGUE: RoleSeed[] = [
       permission(Resource.EMPLOYEE, Operation.CREATE),
       permission(Resource.EMPLOYEE, Operation.UPDATE),
       permission(Resource.DEPARTMENT, Operation.VIEW),
+      Permissions.LEAD_VIEW,
+      Permissions.LEAD_CREATE,
+      Permissions.LEAD_UPDATE,
+      Permissions.LEAD_ASSIGN,
+      // View-only on the catalogue: renaming a stage rewrites how every report
+      // in the organization reads, so it stays an administrator's decision.
+      Permissions.LEAD_SOURCE_VIEW,
+      Permissions.LEAD_STAGE_VIEW,
     ],
   },
   {
@@ -211,6 +272,12 @@ export const ROLE_CATALOGUE: RoleSeed[] = [
     permissions: [
       permission(Resource.EMPLOYEE, Operation.VIEW),
       permission(Resource.DEPARTMENT, Operation.VIEW),
+      // Read-only on leads too. A salesperson who must log calls needs
+      // `manager`, or a custom role with lead.update — created through the API,
+      // since roles are rows.
+      Permissions.LEAD_VIEW,
+      Permissions.LEAD_SOURCE_VIEW,
+      Permissions.LEAD_STAGE_VIEW,
     ],
   },
 ];
