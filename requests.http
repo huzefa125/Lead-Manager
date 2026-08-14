@@ -239,3 +239,252 @@ Content-Type: application/json
 ### Cleanup: delete the demo role (works only once nobody holds it)
 DELETE {{host}}/api/roles/{{roleId}}
 Authorization: Bearer {{su}}
+
+### ==========================================================================
+### Lead engine
+### ==========================================================================
+###
+### Walks one lead through the whole journey, then reads the funnel.
+### Sign in as the acme admin first — it holds lead.*, lead_source.* and
+### lead_stage.*.
+
+### Log in as the acme admin
+# @name leadAdmin
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "admin@example.com", "password": "Admin123!" }
+
+@la = {{leadAdmin.response.body.data.accessToken}}
+
+### The pipeline, provisioned on first use
+GET {{host}}/api/lead-stages
+Authorization: Bearer {{la}}
+
+### Sources — one per channel out of the box
+GET {{host}}/api/lead-sources
+Authorization: Bearer {{la}}
+
+### --- Capture from every channel ---
+
+### WhatsApp enquiry
+# @name captured
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{
+  "channel": "WHATSAPP",
+  "firstName": "Ravi",
+  "lastName": "Menon",
+  "phone": "+91 90000 11111",
+  "company": "Vertex Logistics",
+  "externalId": "wa-88213",
+  "campaign": "diwali-2026",
+  "utmSource": "whatsapp",
+  "utmMedium": "social",
+  "landingPage": "https://acme.example.com/quote",
+  "estimatedValue": 125000
+}
+
+@leadId = {{captured.response.body.data.lead.id}}
+
+### Website form
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{
+  "channel": "WEBSITE_FORM",
+  "email": "priya@nimbus.example.com",
+  "company": "Nimbus Interiors",
+  "utmSource": "google",
+  "utmMedium": "cpc",
+  "utmCampaign": "diwali-2026"
+}
+
+### Google Ads lead form
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "channel": "GOOGLE_ADS", "email": "buyer@kestrel.example.com", "company": "Kestrel Foods" }
+
+### Redelivered webhook — expect 200, outcome "duplicate_external_id", no new lead
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "channel": "WHATSAPP", "phone": "+91 90000 11111", "externalId": "wa-88213" }
+
+### Repeat enquiry from another channel — expect 200, "merged_into_open_lead"
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "channel": "INSTAGRAM", "phone": "+91 90000 11111", "jobTitle": "Ops Head" }
+
+### Capture cannot set a stage, owner or status — they are stripped, not rejected
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "channel": "EMAIL", "email": "sneaky@example.com", "stageKey": "won", "status": "WON" }
+
+### A lead nobody can be reached at — expect 422
+POST {{host}}/api/leads/capture
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "channel": "EMAIL", "firstName": "Anon", "company": "No Contact Ltd" }
+
+### --- Work the lead ---
+
+### Who can own it
+GET {{host}}/api/users
+Authorization: Bearer {{la}}
+
+### Assign it (paste a userId from above)
+PUT {{host}}/api/leads/{{leadId}}/assignment
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "assignedToId": "REPLACE_WITH_USER_ID", "note": "Ravi covers logistics" }
+
+### Log an outbound call — this is what turns "received" into "contacted"
+POST {{host}}/api/leads/{{leadId}}/activities
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "type": "CALL", "direction": "OUTBOUND", "subject": "Intro call", "durationMinutes": 12 }
+
+### Their reply — "contacted" becomes "replied". Direction is the whole difference.
+POST {{host}}/api/leads/{{leadId}}/activities
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "type": "WHATSAPP", "direction": "INBOUND", "body": "Send me a quote for 400 units" }
+
+### Meeting booked
+POST {{host}}/api/leads/{{leadId}}/activities
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "type": "MEETING", "direction": "OUTBOUND", "subject": "Demo call" }
+
+### Quotation sent
+POST {{host}}/api/leads/{{leadId}}/activities
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "type": "QUOTATION", "direction": "OUTBOUND", "subject": "Quote #4471 — ₹1,25,000" }
+
+### A note is NOT contact — check `advanced` comes back empty of milestones
+POST {{host}}/api/leads/{{leadId}}/activities
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "type": "NOTE", "direction": "INTERNAL", "body": "Procurement signs off on Friday" }
+
+### Forging a system entry — expect 422
+POST {{host}}/api/leads/{{leadId}}/activities
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "type": "STAGE_CHANGED" }
+
+### Move it forward
+PUT {{host}}/api/leads/{{leadId}}/stage
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "stageKey": "quotation", "note": "Quote is with them" }
+
+### Drag it back — milestones must survive, which is the point of the design
+PUT {{host}}/api/leads/{{leadId}}/stage
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "stageKey": "follow_up" }
+
+### The lead now: `stage` says follow_up, `journey.quotationSentAt` is still set
+GET {{host}}/api/leads/{{leadId}}
+Authorization: Bearer {{la}}
+
+### The complete timeline
+GET {{host}}/api/leads/{{leadId}}/timeline?order=asc
+Authorization: Bearer {{la}}
+
+### Only human-logged work
+GET {{host}}/api/leads/{{leadId}}/timeline?excludeSystem=true
+Authorization: Bearer {{la}}
+
+### Close it won
+PUT {{host}}/api/leads/{{leadId}}/stage
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "stageKey": "won" }
+
+### Marking a lead lost with no reason — expect 422
+PUT {{host}}/api/leads/{{leadId}}/stage
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "stageKey": "lost" }
+
+### --- Reporting ---
+
+### The funnel, and where the journey breaks
+GET {{host}}/api/leads/funnel
+Authorization: Bearer {{la}}
+
+### Split by source
+GET {{host}}/api/leads/funnel?groupBy=source
+Authorization: Bearer {{la}}
+
+### Split by salesperson
+GET {{host}}/api/leads/funnel?groupBy=owner
+Authorization: Bearer {{la}}
+
+### --- The queues a manager actually works from ---
+
+### Nobody owns these
+GET {{host}}/api/leads?unassigned=true
+Authorization: Bearer {{la}}
+
+### Open and untouched for a week
+GET {{host}}/api/leads?staleForDays=7&status=OPEN
+Authorization: Bearer {{la}}
+
+### By channel
+GET {{host}}/api/leads?channel=WHATSAPP,INSTAGRAM
+Authorization: Bearer {{la}}
+
+### Biggest deals first
+GET {{host}}/api/leads?sort=estimatedValue&order=desc&limit=10
+Authorization: Bearer {{la}}
+
+### An unknown value in a list filter is a 422, not a silent widening
+GET {{host}}/api/leads?status=WON,MAYBE
+Authorization: Bearer {{la}}
+
+### --- Pipeline configuration ---
+
+### A finer-grained source
+POST {{host}}/api/lead-sources
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "name": "Google Ads — Brand", "channel": "GOOGLE_ADS", "key": "google_ads_brand" }
+
+### A stage of your own — records no milestone, because only you know what it means
+POST {{host}}/api/lead-stages
+Authorization: Bearer {{la}}
+Content-Type: application/json
+
+{ "name": "Negotiation", "position": 6 }
+
+### Deleting a system stage — expect 409
+DELETE {{host}}/api/lead-stages/REPLACE_WITH_WON_STAGE_ID
+Authorization: Bearer {{la}}
