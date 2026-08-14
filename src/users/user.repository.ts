@@ -16,6 +16,7 @@ import type { UserRecord, UserWithRoles } from './user.types';
  * lookups, not an N+1.
  */
 export const withRoles = {
+  organization: true,
   roles: {
     include: {
       role: {
@@ -31,6 +32,8 @@ export interface CreateUserInput {
   email: string;
   passwordHash: string;
   name?: string | undefined;
+  /** Required — a user must belong to exactly one organization. */
+  organizationId: string;
   /** Role names to assign at creation. Resolved to ids by the caller's service. */
   roleIds?: string[] | undefined;
 }
@@ -44,6 +47,7 @@ export async function createUser(input: CreateUserInput): Promise<UserWithRoles>
     email: input.email,
     passwordHash: input.passwordHash,
     ...(input.name !== undefined ? { name: input.name } : {}),
+    organization: { connect: { id: input.organizationId } },
     ...(input.roleIds && input.roleIds.length > 0
       ? { roles: { create: input.roleIds.map((roleId) => ({ roleId })) } }
       : {}),
@@ -75,6 +79,11 @@ export interface ListUsersOptions {
   take: number;
   search?: string | undefined;
   roleName?: string | undefined;
+  /**
+   * Confines the listing to one tenant. Undefined means "every organization",
+   * which callers must only pass for a cross-tenant administrator.
+   */
+  organizationId?: string | undefined;
 }
 
 /** Paginated listing for the user-administration API. */
@@ -82,6 +91,7 @@ export async function listUsers(
   options: ListUsersOptions,
 ): Promise<{ users: UserWithRoles[]; total: number }> {
   const where: Prisma.UserWhereInput = {
+    ...(options.organizationId ? { organizationId: options.organizationId } : {}),
     ...(options.search
       ? {
           OR: [

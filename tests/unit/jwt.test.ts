@@ -7,6 +7,7 @@ import { ApiError } from '../../src/utils/api-error';
 const payload = {
   sub: 'a3f1c2d4-0000-4000-8000-000000000001',
   email: 'user@example.com',
+  org: 'b4e2d3c5-0000-4000-8000-0000000000ff',
   roles: ['user'],
   permissions: ['employee.view', 'department.view'],
 };
@@ -26,6 +27,7 @@ describe('access tokens', () => {
 
     expect(claims.sub).toBe(payload.sub);
     expect(claims.email).toBe(payload.email);
+    expect(claims.org).toBe(payload.org);
     expect(claims.roles).toEqual(['user']);
     expect(claims.permissions).toEqual(['employee.view', 'department.view']);
     expect(claims.type).toBe('access');
@@ -95,6 +97,26 @@ describe('access tokens', () => {
     );
   });
 
+  it('rejects a token with no organization claim', () => {
+    // Tenant scoping filters on this claim; a token without it must not
+    // authenticate, or the scoping helpers would have nothing to filter on.
+    const noTenant = signRaw({
+      sub: payload.sub,
+      email: payload.email,
+      roles: payload.roles,
+      permissions: payload.permissions,
+      type: 'access',
+      jti: 'x',
+    });
+
+    expect(() => verifyAccessToken(noTenant)).toThrow(ApiError);
+  });
+
+  it('rejects a token whose organization claim is empty', () => {
+    const emptyTenant = signRaw({ ...payload, org: '', type: 'access', jti: 'x' });
+    expect(() => verifyAccessToken(emptyTenant)).toThrow(ApiError);
+  });
+
   it('rejects a pre-RBAC token carrying a single role string', () => {
     // Legacy shape: `role: 'USER'` with no permissions array. Admitting it
     // would authenticate the user with zero permissions and produce confusing
@@ -102,6 +124,7 @@ describe('access tokens', () => {
     const legacy = signRaw({
       sub: payload.sub,
       email: payload.email,
+      org: payload.org,
       role: 'USER',
       type: 'access',
       jti: 'x',

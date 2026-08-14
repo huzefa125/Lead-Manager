@@ -19,6 +19,13 @@ import { ApiError, ErrorCode } from './api-error';
 export interface AccessTokenClaims {
   sub: string;
   email: string;
+  /**
+   * The tenant this token acts within. Every tenant-scoped query filters on it,
+   * so it must come from the signed token rather than from anything the caller
+   * can set — a client-supplied organization id would be a trivial cross-tenant
+   * read.
+   */
+  org: string;
   /** Role names, e.g. `['admin']`. For display and `requireRole()`. */
   roles: string[];
   /** Effective permission actions, wildcards included, e.g. `['employee.*']`. */
@@ -91,6 +98,10 @@ function isAccessTokenClaims(value: unknown): value is VerifiedAccessToken {
     claims.type === 'access' &&
     typeof claims.sub === 'string' &&
     typeof claims.email === 'string' &&
+    // Without a tenant the scoping helpers have nothing to filter on, so a
+    // token missing it must never authenticate.
+    typeof claims.org === 'string' &&
+    claims.org.length > 0 &&
     // Tokens issued before RBAC carry a `role` string instead of these arrays.
     // Rejecting them means those users re-authenticate once, rather than being
     // admitted with no permissions and hitting confusing 403s.

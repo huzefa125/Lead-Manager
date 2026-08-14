@@ -23,6 +23,7 @@ const TEST_PREFIX = 'itest_';
 
 describe('RBAC', () => {
   let app: Express;
+  let acmeOrganizationId: string;
   const tokens: Record<keyof typeof SEEDED, string> = {} as Record<keyof typeof SEEDED, string>;
 
   const login = async (creds: { email: string; password: string }): Promise<string> => {
@@ -46,6 +47,10 @@ describe('RBAC', () => {
       throw new Error('Database is not seeded. Run `npm run db:seed` before this suite.');
     }
 
+    const acme = await prisma.organization.findUnique({ where: { slug: 'acme' } });
+    if (!acme) throw new Error('Seed organization "acme" is missing. Run `npm run db:seed`.');
+    acmeOrganizationId = acme.id;
+
     app = createApp();
 
     for (const key of Object.keys(SEEDED) as (keyof typeof SEEDED)[]) {
@@ -53,16 +58,20 @@ describe('RBAC', () => {
     }
   });
 
-  beforeEach(async () => {
+  /** Registration creates an organization per account; orphans must not accumulate. */
+  const cleanup = async (): Promise<void> => {
     await prisma.role.deleteMany({ where: { name: { startsWith: TEST_PREFIX } } });
     await prisma.permission.deleteMany({ where: { resource: { startsWith: TEST_PREFIX } } });
     await prisma.user.deleteMany({ where: { email: { contains: TEST_PREFIX } } });
-  });
+    await prisma.organization.deleteMany({
+      where: { slug: { notIn: ['platform', 'acme', 'globex', 'default'] }, users: { none: {} } },
+    });
+  };
+
+  beforeEach(cleanup);
 
   afterAll(async () => {
-    await prisma.role.deleteMany({ where: { name: { startsWith: TEST_PREFIX } } });
-    await prisma.permission.deleteMany({ where: { resource: { startsWith: TEST_PREFIX } } });
-    await prisma.user.deleteMany({ where: { email: { contains: TEST_PREFIX } } });
+    await cleanup();
     await prisma.$disconnect();
   });
 
@@ -274,6 +283,7 @@ describe('RBAC', () => {
         data: {
           email: `${TEST_PREFIX}holder@example.com`,
           passwordHash: 'x',
+          organizationId: acmeOrganizationId,
           roles: { create: { roleId: created.body.data.role.id } },
         },
       });
@@ -375,8 +385,14 @@ describe('RBAC', () => {
     let subjectId: string;
 
     beforeEach(async () => {
+      // Created inside Acme so the Acme admin can act on them; cross-tenant
+      // isolation is covered separately in the organizations suite.
       const subject = await prisma.user.create({
-        data: { email: `${TEST_PREFIX}subject@example.com`, passwordHash: 'x' },
+        data: {
+          email: `${TEST_PREFIX}subject@example.com`,
+          passwordHash: 'x',
+          organizationId: acmeOrganizationId,
+        },
       });
       subjectId = subject.id;
     });

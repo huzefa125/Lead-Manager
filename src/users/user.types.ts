@@ -1,4 +1,5 @@
-import type { Permission, Role, User, UserRole } from '@prisma/client';
+import type { Organization, Permission, Role, User, UserRole } from '@prisma/client';
+import type { OrganizationSummary } from '../organizations/organization.serializer';
 
 /** A role as exposed by the API, without its join-table metadata. */
 export interface PublicRole {
@@ -19,6 +20,9 @@ export interface PublicUser {
   email: string;
   name: string | null;
   isActive: boolean;
+  organizationId: string;
+  /** Present when the organization was loaded alongside the user. */
+  organization?: OrganizationSummary;
   roles: PublicRole[];
   /** Effective permissions, unioned across every role the user holds. */
   permissions: string[];
@@ -36,6 +40,8 @@ export interface PublicUser {
 export interface AuthenticatedUser {
   id: string;
   email: string;
+  /** The tenant this request acts within. Comes from the signed token only. */
+  organizationId: string;
   /** Role names, for `requireRole()` and logging. */
   roles: string[];
   /** Effective permission actions. What `authorize()` checks. */
@@ -46,8 +52,9 @@ export interface AuthenticatedUser {
 
 export type UserRecord = User;
 
-/** A user with roles and each role's permissions eagerly loaded. */
+/** A user with roles, each role's permissions, and the organization loaded. */
 export type UserWithRoles = User & {
+  organization?: Organization;
   roles: (UserRole & {
     role: Role & {
       permissions: { permission: Permission }[];

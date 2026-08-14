@@ -3,6 +3,7 @@ import { ApiError } from '../utils/api-error';
 import { sendSuccess } from '../utils/api-response';
 import { toPublicUser, toPublicUsers } from '../users/user.serializer';
 import * as userService from '../users/user.service';
+import type { AuthenticatedUser } from '../users/user.types';
 import * as permissionService from './permission.service';
 import * as roleService from './role.service';
 import * as userRoleService from './user-role.service';
@@ -41,9 +42,9 @@ function query<T>(req: Request): T {
 }
 
 /** The acting administrator, guaranteed present by `authenticate`. */
-function actorId(req: Request): string {
+function currentUser(req: Request): AuthenticatedUser {
   if (!req.user) throw ApiError.unauthorized();
-  return req.user.id;
+  return req.user;
 }
 
 // --- Roles -------------------------------------------------------------------
@@ -169,9 +170,9 @@ export async function deletePermission(req: Request, res: Response): Promise<voi
 
 // --- Users and their roles ---------------------------------------------------
 
-/** GET /api/users */
+/** GET /api/users — confined to the caller's organization. */
 export async function listUsers(req: Request, res: Response): Promise<void> {
-  const result = await userService.listUsers(query<ListUsersQuery>(req));
+  const result = await userService.listUsers(currentUser(req), query<ListUsersQuery>(req));
 
   sendSuccess(res, {
     users: toPublicUsers(result.users),
@@ -184,18 +185,21 @@ export async function listUsers(req: Request, res: Response): Promise<void> {
   });
 }
 
-/** GET /api/users/:id */
+/** GET /api/users/:id — a user in another tenant reads as 404. */
 export async function getUser(req: Request, res: Response): Promise<void> {
-  const user = await userService.getUserByIdOrFail(params<{ id: string }>(req).id);
+  const user = await userService.getUserInTenantOrFail(
+    currentUser(req),
+    params<{ id: string }>(req).id,
+  );
   sendSuccess(res, { user: toPublicUser(user) });
 }
 
 /** PUT /api/users/:id/roles — replaces the user's roles. */
 export async function setUserRoles(req: Request, res: Response): Promise<void> {
   const user = await userRoleService.setUserRoles(
+    currentUser(req),
     params<{ id: string }>(req).id,
     (req.body as SetUserRolesInput).roles,
-    actorId(req),
   );
   sendSuccess(res, { user: toPublicUser(user), message: 'Roles updated; user sessions revoked' });
 }
@@ -203,9 +207,9 @@ export async function setUserRoles(req: Request, res: Response): Promise<void> {
 /** POST /api/users/:id/roles — adds roles. */
 export async function addUserRoles(req: Request, res: Response): Promise<void> {
   const user = await userRoleService.addUserRoles(
+    currentUser(req),
     params<{ id: string }>(req).id,
     (req.body as AssignRolesInput).roles,
-    actorId(req),
   );
   sendSuccess(res, { user: toPublicUser(user), message: 'Roles assigned; user sessions revoked' });
 }
@@ -213,9 +217,9 @@ export async function addUserRoles(req: Request, res: Response): Promise<void> {
 /** DELETE /api/users/:id/roles — removes roles. */
 export async function removeUserRoles(req: Request, res: Response): Promise<void> {
   const user = await userRoleService.removeUserRoles(
+    currentUser(req),
     params<{ id: string }>(req).id,
     (req.body as AssignRolesInput).roles,
-    actorId(req),
   );
   sendSuccess(res, { user: toPublicUser(user), message: 'Roles removed; user sessions revoked' });
 }

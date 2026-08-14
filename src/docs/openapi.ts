@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { organizationPaths, organizationSchemas } from './organization.paths';
 import { rbacPaths, rbacSchemas } from './rbac.paths';
 
 /**
@@ -67,6 +68,20 @@ export const openApiDocument = {
     description: [
       'Authentication and role-based access control: registration, login, JWT access',
       'tokens, database-backed rotating refresh tokens, and dynamic RBAC.',
+      '',
+      '## Multi-tenancy',
+      '',
+      '**Every user belongs to exactly one organization** — a NOT NULL column, not a',
+      'convention. The tenant is a signed claim (`org`) in the access token, never',
+      'anything the caller can supply, and every tenant-scoped query filters on it.',
+      '',
+      'A caller sees only their own organization unless they hold',
+      '`organization.manage_all`. Reaching another tenant\'s record returns **404, not',
+      '403** — confirming that a record exists elsewhere would itself be a disclosure.',
+      '',
+      '`POST /auth/register` creates an organization and its first admin together. It',
+      'deliberately cannot join an existing organization: an unauthenticated request',
+      'must not be able to insert itself into another company\'s tenant.',
       '',
       '## Authorization',
       '',
@@ -153,6 +168,11 @@ export const openApiDocument = {
     {
       name: 'Authentication',
       description: 'Registration, login, token lifecycle and session revocation.',
+    },
+    {
+      name: 'Organizations',
+      description:
+        'Tenants. Every user belongs to exactly one, and every tenant-scoped query is filtered by it. Only `organization.manage_all` lifts that confinement.',
     },
     {
       name: 'Roles',
@@ -245,6 +265,7 @@ export const openApiDocument = {
       },
 
       ...rbacSchemas,
+      ...organizationSchemas,
 
       AuthSession: {
         type: 'object',
@@ -796,6 +817,7 @@ export const openApiDocument = {
       },
     },
 
+    ...organizationPaths,
     ...rbacPaths,
 
     '/': {

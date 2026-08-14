@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authRouter } from '../auth/auth.routes';
+import { organizationRouter } from '../organizations';
 import { permissionRouter, roleRouter, userRouter } from '../rbac';
 import { sendSuccess } from '../utils/api-response';
 
@@ -11,6 +12,7 @@ export const apiRouter = Router();
  * `authorize('<resource>.<operation>')` — no change to the RBAC internals.
  */
 apiRouter.use('/auth', authRouter);
+apiRouter.use('/organizations', organizationRouter);
 apiRouter.use('/roles', roleRouter);
 apiRouter.use('/permissions', permissionRouter);
 apiRouter.use('/users', userRouter);
@@ -28,6 +30,14 @@ apiRouter.get('/', (_req, res) => {
         logout: 'POST /api/auth/logout',
         logoutAll: 'POST /api/auth/logout-all',
         me: 'GET /api/auth/me',
+      },
+      organizations: {
+        current: 'GET /api/organizations/current',
+        list: 'GET /api/organizations',
+        create: 'POST /api/organizations',
+        get: 'GET /api/organizations/:id',
+        update: 'PATCH /api/organizations/:id',
+        remove: 'DELETE /api/organizations/:id',
       },
       roles: {
         list: 'GET /api/roles',

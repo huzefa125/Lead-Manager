@@ -15,6 +15,7 @@ function buildUser(
     passwordHash: '$2b$12$abcdefghijklmnopqrstuv',
     name: 'Ada',
     isActive: true,
+    organizationId: 'b4e2d3c5-0000-4000-8000-0000000000ff',
     createdAt: now,
     updatedAt: now,
     roles: roles.map((role, index) => ({
@@ -62,7 +63,17 @@ describe('user serialization', () => {
     // Pinned deliberately: a column added to the schema later must not appear
     // here without someone updating this test on purpose.
     expect(Object.keys(toPublicUser(user)).sort()).toEqual(
-      ['createdAt', 'email', 'id', 'isActive', 'name', 'permissions', 'roles', 'updatedAt'].sort(),
+      [
+        'createdAt',
+        'email',
+        'id',
+        'isActive',
+        'name',
+        'organizationId',
+        'permissions',
+        'roles',
+        'updatedAt',
+      ].sort(),
     );
   });
 

@@ -42,6 +42,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
     req.user = {
       id: claims.sub,
       email: claims.email,
+      organizationId: claims.org,
       roles: claims.roles,
       permissions: claims.permissions,
       tokenId: claims.jti,

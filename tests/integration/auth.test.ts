@@ -35,6 +35,24 @@ function cookieValue(cookie: string): string {
  */
 const OWN_SESSIONS = { user: { email: { contains: 'integration' } } } as const;
 
+/** Organizations created by the seed, which cleanup must never remove. */
+const SEED_SLUGS = ['platform', 'acme', 'globex', 'default'];
+
+/**
+ * Removes this suite's users and any organization left with no members.
+ *
+ * Registration now creates an organization per account, so deleting only the
+ * users would leak an empty organization on every run — and a slug collision
+ * on the next one, since slugs are unique.
+ */
+async function cleanup(): Promise<void> {
+  // refresh_tokens and user_roles cascade from users.
+  await prisma.user.deleteMany({ where: { email: { contains: 'integration' } } });
+  await prisma.organization.deleteMany({
+    where: { slug: { notIn: SEED_SLUGS }, users: { none: {} } },
+  });
+}
+
 const sessionCount = (): Promise<number> =>
   prisma.refreshToken.count({ where: OWN_SESSIONS });
 
@@ -58,12 +76,11 @@ describe('auth API', () => {
   });
 
   beforeEach(async () => {
-    // refresh_tokens and user_roles cascade from users.
-    await prisma.user.deleteMany({ where: { email: { contains: 'integration' } } });
+    await cleanup();
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({ where: { email: { contains: 'integration' } } });
+    await cleanup();
     await prisma.$disconnect();
   });
 
@@ -148,16 +165,19 @@ describe('auth API', () => {
         .expect(201);
 
       const names = response.body.data.user.roles.map((role: { name: string }) => role.name);
-      expect(names).toEqual(['user']);
+      expect(names).toEqual(['admin']);
+      // Admin of their OWN tenant only — never a platform administrator.
       expect(response.body.data.user.permissions).not.toContain('*');
+      expect(response.body.data.user.permissions).not.toContain('organization.manage_all');
     });
 
-    it('grants the default role and its permissions', async () => {
+    it('makes the founder an admin of the organization it creates', async () => {
       const response = await request(app).post('/api/auth/register').send(CREDENTIALS).expect(201);
 
       expect(response.body.data.user.roles).toHaveLength(1);
+      expect(response.body.data.user.organizationId).toEqual(expect.any(String));
       expect(response.body.data.user.permissions).toEqual(
-        expect.arrayContaining(['employee.view', 'department.view']),
+        expect.arrayContaining(['user.*', 'employee.*', 'organization.view']),
       );
     });
   });

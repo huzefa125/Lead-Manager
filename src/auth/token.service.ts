@@ -37,6 +37,7 @@ export function buildAccessToken(user: UserWithRoles): string {
   return signAccessToken({
     sub: user.id,
     email: user.email,
+    org: user.organizationId,
     roles: extractRoleNames(user),
     permissions: extractPermissions(user),
   });

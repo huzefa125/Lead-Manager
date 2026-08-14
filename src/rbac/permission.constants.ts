@@ -30,6 +30,7 @@ export const Operation = {
  * re-running the seed — no authorization code changes.
  */
 export const Resource = {
+  ORGANIZATION: 'organization',
   USER: 'user',
   ROLE: 'role',
   PERMISSION: 'permission',
@@ -43,6 +44,16 @@ export const permission = (resource: string, operation: string): string =>
 
 /** Named references for the permissions this application's own routes require. */
 export const Permissions = {
+  ORGANIZATION_VIEW: permission(Resource.ORGANIZATION, Operation.VIEW),
+  ORGANIZATION_CREATE: permission(Resource.ORGANIZATION, Operation.CREATE),
+  ORGANIZATION_UPDATE: permission(Resource.ORGANIZATION, Operation.UPDATE),
+  ORGANIZATION_DELETE: permission(Resource.ORGANIZATION, Operation.DELETE),
+  /**
+   * Lifts tenant confinement. Without it every query is filtered to the
+   * caller's own organization — see `src/utils/tenant.ts`.
+   */
+  ORGANIZATION_MANAGE_ALL: permission(Resource.ORGANIZATION, 'manage_all'),
+
   USER_VIEW: permission(Resource.USER, Operation.VIEW),
   USER_CREATE: permission(Resource.USER, Operation.CREATE),
   USER_UPDATE: permission(Resource.USER, Operation.UPDATE),
@@ -121,6 +132,13 @@ export const PERMISSION_CATALOGUE: PermissionSeed[] = [
     operation: WILDCARD,
     description: 'Full system access — grants every permission, present and future.',
   },
+  ...crudFor(Resource.ORGANIZATION, 'organizations'),
+  {
+    action: Permissions.ORGANIZATION_MANAGE_ALL,
+    resource: Resource.ORGANIZATION,
+    operation: 'manage_all',
+    description: 'Act across every organization — platform administrators only',
+  },
   ...crudFor(Resource.USER, 'user accounts'),
   ...crudFor(Resource.ROLE, 'roles'),
   {
@@ -158,8 +176,13 @@ export const ROLE_CATALOGUE: RoleSeed[] = [
   {
     name: SystemRole.ADMIN,
     displayName: 'Admin',
-    description: 'Administrative access to business modules and user management.',
+    description:
+      'Administers their own organization. Deliberately excludes organization.manage_all, so every query stays confined to their tenant.',
     permissions: [
+      // View and rename their own organization, but not create or delete
+      // organizations, and not reach across tenants.
+      Permissions.ORGANIZATION_VIEW,
+      Permissions.ORGANIZATION_UPDATE,
       `${Resource.USER}.${WILDCARD}`,
       `${Resource.EMPLOYEE}.${WILDCARD}`,
       `${Resource.DEPARTMENT}.${WILDCARD}`,
@@ -173,6 +196,7 @@ export const ROLE_CATALOGUE: RoleSeed[] = [
     displayName: 'Manager',
     description: 'Manages employees and views departments.',
     permissions: [
+      Permissions.ORGANIZATION_VIEW,
       Permissions.USER_VIEW,
       permission(Resource.EMPLOYEE, Operation.VIEW),
       permission(Resource.EMPLOYEE, Operation.CREATE),

@@ -1,6 +1,6 @@
 import { ApiError } from '../utils/api-error';
 import * as userService from '../users/user.service';
-import type { UserWithRoles } from '../users/user.types';
+import type { AuthenticatedUser, UserWithRoles } from '../users/user.types';
 import * as rbacRepository from './rbac.repository';
 import { SystemRole } from './permission.constants';
 
@@ -36,7 +36,11 @@ async function resolveRoleIds(names: string[]): Promise<string[]> {
  * Stops an administrator removing their own last privileged role and locking
  * themselves — and possibly everyone — out of the RBAC APIs.
  */
-function assertNotSelfDemotion(actorId: string, targetUserId: string, resultingRoles: string[]): void {
+function assertNotSelfDemotion(
+  actorId: string,
+  targetUserId: string,
+  resultingRoles: string[],
+): void {
   if (actorId !== targetUserId) return;
 
   const keepsPrivilege = resultingRoles.some(
@@ -50,51 +54,59 @@ function assertNotSelfDemotion(actorId: string, targetUserId: string, resultingR
   }
 }
 
-export async function getUserRoles(userId: string): Promise<UserWithRoles> {
-  return userService.getUserByIdOrFail(userId);
+/**
+ * Every mutation loads the target through the tenant-aware lookup, so an
+ * administrator cannot grant roles to a user in another organization — the
+ * target simply reads as 404 from outside their tenant.
+ */
+export async function getUserRoles(
+  actor: AuthenticatedUser,
+  userId: string,
+): Promise<UserWithRoles> {
+  return userService.getUserInTenantOrFail(actor, userId);
 }
 
 /** Replaces a user's roles entirely. An empty array strips them all. */
 export async function setUserRoles(
+  actor: AuthenticatedUser,
   userId: string,
   roleNames: string[],
-  actorId: string,
 ): Promise<UserWithRoles> {
-  await userService.getUserByIdOrFail(userId);
-  assertNotSelfDemotion(actorId, userId, roleNames);
+  await userService.getUserInTenantOrFail(actor, userId);
+  assertNotSelfDemotion(actor.id, userId, roleNames);
 
   const roleIds = await resolveRoleIds(roleNames);
-  await rbacRepository.setUserRoles(userId, roleIds, actorId);
+  await rbacRepository.setUserRoles(userId, roleIds, actor.id);
 
   return userService.getUserByIdOrFail(userId);
 }
 
 /** Adds roles, leaving existing ones in place. Re-adding is a no-op. */
 export async function addUserRoles(
+  actor: AuthenticatedUser,
   userId: string,
   roleNames: string[],
-  actorId: string,
 ): Promise<UserWithRoles> {
-  await userService.getUserByIdOrFail(userId);
+  await userService.getUserInTenantOrFail(actor, userId);
 
   const roleIds = await resolveRoleIds(roleNames);
-  await rbacRepository.addUserRoles(userId, roleIds, actorId);
+  await rbacRepository.addUserRoles(userId, roleIds, actor.id);
 
   return userService.getUserByIdOrFail(userId);
 }
 
 /** Removes roles. Removing one the user does not hold is a no-op, not an error. */
 export async function removeUserRoles(
+  actor: AuthenticatedUser,
   userId: string,
   roleNames: string[],
-  actorId: string,
 ): Promise<UserWithRoles> {
-  const user = await userService.getUserByIdOrFail(userId);
+  const user = await userService.getUserInTenantOrFail(actor, userId);
 
   const remaining = user.roles
     .map((assignment) => assignment.role.name)
     .filter((name) => !roleNames.includes(name));
-  assertNotSelfDemotion(actorId, userId, remaining);
+  assertNotSelfDemotion(actor.id, userId, remaining);
 
   const roleIds = await resolveRoleIds(roleNames);
   await rbacRepository.removeUserRoles(userId, roleIds);

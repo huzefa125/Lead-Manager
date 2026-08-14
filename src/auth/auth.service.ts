@@ -21,6 +21,7 @@ export async function register(
     email: input.email,
     password: input.password,
     name: input.name,
+    organizationName: input.organizationName,
   });
 
   const tokens = await tokenService.issueTokens(user, context);
@@ -45,6 +46,17 @@ export async function login(input: LoginInput, context: RequestContext): Promise
   // someone who does not already hold valid credentials.
   if (!user.isActive) {
     throw new ApiError(403, ErrorCode.ACCOUNT_DISABLED, 'This account has been disabled');
+  }
+
+  // Suspending a tenant must lock out every account in it, not just block new
+  // ones — otherwise a deactivated organization keeps working until each user
+  // happens to log out.
+  if (user.organization && !user.organization.isActive) {
+    throw new ApiError(
+      403,
+      ErrorCode.ACCOUNT_DISABLED,
+      'This organization has been deactivated',
+    );
   }
 
   const tokens = await tokenService.issueTokens(user, context);
@@ -78,6 +90,16 @@ export async function refresh(
   if (!user.isActive) {
     await tokenService.deleteAllSessions(user.id);
     throw new ApiError(403, ErrorCode.ACCOUNT_DISABLED, 'This account has been disabled');
+  }
+
+  // Refresh is where a tenant suspension reaches an already signed-in user.
+  if (user.organization && !user.organization.isActive) {
+    await tokenService.deleteAllSessions(user.id);
+    throw new ApiError(
+      403,
+      ErrorCode.ACCOUNT_DISABLED,
+      'This organization has been deactivated',
+    );
   }
 
   const tokens = await tokenService.rotateTokens(user, stored, context);

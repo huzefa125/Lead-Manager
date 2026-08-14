@@ -1,4 +1,5 @@
 import type { Role } from '@prisma/client';
+import { toOrganizationSummary } from '../organizations/organization.serializer';
 import type { PublicRole, PublicUser, UserRecord, UserWithRoles } from './user.types';
 
 /**
@@ -11,11 +12,15 @@ import type { PublicRole, PublicUser, UserRecord, UserWithRoles } from './user.t
 export function toPublicUser(user: UserRecord | UserWithRoles): PublicUser {
   const roles = 'roles' in user && Array.isArray(user.roles) ? user.roles : [];
 
+  const organization = 'organization' in user ? user.organization : undefined;
+
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     isActive: user.isActive,
+    organizationId: user.organizationId,
+    ...(organization ? { organization: toOrganizationSummary(organization) } : {}),
     roles: roles.map((assignment) => toPublicRole(assignment.role)),
     permissions: extractPermissions(user),
     createdAt: user.createdAt,

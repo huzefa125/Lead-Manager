@@ -28,6 +28,15 @@ export const registerSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
   name: z.string().trim().min(1).max(100).optional(),
+  /**
+   * Names the organization created for this account. Omitted, a personal one is
+   * derived from the name or email.
+   *
+   * There is deliberately no way to join an existing organization here: an
+   * unauthenticated request must not be able to insert itself into another
+   * company's tenant. That is an authenticated, permission-gated operation.
+   */
+  organizationName: z.string().trim().min(2).max(100).optional(),
 });
 
 export const loginSchema = z.object({

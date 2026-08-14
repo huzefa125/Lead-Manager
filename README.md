@@ -139,12 +139,18 @@ Base URL `/api`. Every response — success or failure — uses one envelope:
 
 | Method | Endpoint | Auth | Permission | Purpose |
 |---|---|---|---|---|
-| `POST` | `/api/auth/register` | — | — | Create account, open session |
+| `POST` | `/api/auth/register` | — | — | Create organization + first admin, open session |
 | `POST` | `/api/auth/login` | — | — | Authenticate, open session |
 | `POST` | `/api/auth/refresh` | refresh cookie | — | New access token + rotated refresh token |
 | `POST` | `/api/auth/logout` | refresh cookie | — | Delete this session |
 | `POST` | `/api/auth/logout-all` | Bearer | — | Delete all sessions |
 | `GET` | `/api/auth/me` | Bearer | — | Current user, roles and permissions |
+| `GET` | `/api/organizations/current` | Bearer | — | The caller's own tenant |
+| `GET` | `/api/organizations` | Bearer | `organization.view` | List (tenant-confined) |
+| `POST` | `/api/organizations` | Bearer | `organization.create` | Create a tenant |
+| `GET` | `/api/organizations/:id` | Bearer | `organization.view` | Get a tenant |
+| `PATCH` | `/api/organizations/:id` | Bearer | `organization.update` | Update a tenant |
+| `DELETE` | `/api/organizations/:id` | Bearer | `organization.delete` | Delete a tenant |
 | `GET` | `/api/roles` | Bearer | `role.view` | List roles |
 | `POST` | `/api/roles` | Bearer | `role.create` | Create a role |
 | `GET` | `/api/roles/:id` | Bearer | `role.view` | Get a role |
@@ -253,12 +259,15 @@ src/
 ├── config/          env validation (Zod), Prisma client, logger
 ├── auth/            routes, controller, service, token service/repository,
 │                    Zod schemas, cookie handling
+├── organizations/   tenants — repository, service, controller, routes
 ├── rbac/            roles, permissions, user-role assignment
 │                    permission.constants.ts — the catalogue (edit to add a module)
 ├── users/           repository, service, serializer, types
 ├── middleware/      authenticate, authorize, validate, error-handler,
 │                    rate-limit, request-id, not-found
 ├── utils/           ApiError, response envelope, jwt, password, crypto, duration
+│                    permissions.ts — the authorization decision
+│                    tenant.ts      — the tenant-isolation decision
 ├── docs/            OpenAPI spec + Swagger UI router
 ├── routes/          API router — new feature routers mount here
 ├── types/           Express request augmentation
@@ -296,6 +305,91 @@ Controllers do no business logic; services never touch `req`/`res`.
   field, as a safety net.
 - **`trust proxy` defaults off** — enabling it blindly lets clients spoof `X-Forwarded-For` and
   evade rate limiting.
+
+---
+
+## Organizations (multi-tenancy)
+
+**Every user belongs to exactly one organization.** That is a `NOT NULL` foreign key, not a
+convention — a user with no tenant could not be scoped by any query, so the invariant is
+enforced by the column.
+
+```
+Organization ──< User ──< UserRole >── Role ──< RolePermission >── Permission
+```
+
+### How isolation works
+
+The tenant is a **signed claim** (`org`) in the access token — never anything the caller can
+supply, since a client-supplied organization id would be a trivial cross-tenant read. Every
+tenant-scoped query filters on it through one small module,
+[`src/utils/tenant.ts`](src/utils/tenant.ts), so the rule cannot drift between call sites.
+
+A caller sees only their own organization **unless they hold `organization.manage_all`**. Super
+Admin satisfies that through its `*` grant, so platform administrators work across tenants with
+no special case in the code.
+
+**Cross-tenant access returns 404, not 403.** Confirming that a record exists in an organization
+you cannot see is itself a disclosure; from outside the tenant, the resource is
+indistinguishable from one that never existed.
+
+### Registration creates a tenant
+
+`POST /api/auth/register` creates the organization and its first user **in one transaction** —
+a failed user insert cannot leave an orphan organization behind. The founder becomes `admin` of
+that organization, because a brand new tenant with nobody able to administer it would be
+useless.
+
+```jsonc
+POST /api/auth/register
+{ "email": "ada@acme.com", "password": "CorrectHorse1", "organizationName": "Acme Corporation" }
+// → organization "Acme Corporation" (slug "acme-corporation"), user is its admin
+```
+
+`organizationName` is optional — omitted, a personal organization is derived from the name or
+email, so no account can exist outside one. Colliding names get a numeric slug suffix
+(`acme-corporation-2`).
+
+**Registration deliberately cannot join an existing organization.** Letting an unauthenticated
+request insert itself into another company's tenant would be a serious hole. Adding people to an
+existing organization is an authenticated, permission-gated operation.
+
+The founder is admin of *their own* tenant only — they do **not** get `organization.manage_all`
+or `*`. There are tests pinning that.
+
+### Endpoints
+
+| Method | Endpoint | Permission | Notes |
+|---|---|---|---|
+| `GET` | `/api/organizations/current` | *(authenticated)* | Every user may see their own tenant |
+| `GET` | `/api/organizations` | `organization.view` | One row, unless `manage_all` |
+| `POST` | `/api/organizations` | `organization.create` | Platform operation |
+| `GET` | `/api/organizations/:id` | `organization.view` | 404 across tenants |
+| `PATCH` | `/api/organizations/:id` | `organization.update` | `isActive` needs `manage_all` |
+| `DELETE` | `/api/organizations/:id` | `organization.delete` | Refuses while it has users |
+
+### Tenant safety rails
+
+- **`slug` is immutable** — it may appear in URLs and integrations.
+- **Deactivating a tenant requires `organization.manage_all`.** It blocks sign-in for every user
+  in it, including the caller, so a tenant admin must not be able to lock their own organization
+  out with no route back in. Suspension is enforced at both login *and* refresh, so an
+  already-signed-in user loses access at their next refresh rather than lingering.
+- **An organization with users cannot be deleted** — deletion cascades to every user, session
+  and role assignment in it. And you cannot delete the organization you belong to.
+- **Roles cannot be assigned across tenants.** The target is loaded through the tenant-aware
+  lookup first, so it reads as 404 from outside.
+
+### Seeded tenants
+
+Three on purpose — with everyone in one organization, a broken tenant filter would still look
+correct.
+
+| Tenant | Users |
+|---|---|
+| `platform` | `superadmin@example.com` — the only account with `organization.manage_all` |
+| `acme` | `admin@example.com`, `manager@example.com`, `user@example.com` |
+| `globex` | `globex.admin@example.com` — a full admin, still confined to Globex |
 
 ---
 
@@ -401,17 +495,21 @@ an administrator knows exactly what to grant.
 
 | Role | Permissions |
 |---|---|
-| `super_admin` | `*` |
-| `admin` | `user.*`, `employee.*`, `department.*`, `role.view`, `role.assign`, `permission.view` |
-| `manager` | `user.view`, `employee.view/create/update`, `department.view` |
-| `user` | `employee.view`, `department.view` — assigned automatically at registration |
+| `super_admin` | `*` — the only role with `organization.manage_all` |
+| `admin` | `organization.view/update`, `user.*`, `employee.*`, `department.*`, `role.view`, `role.assign`, `permission.view` — **confined to its own tenant** |
+| `manager` | `organization.view`, `user.view`, `employee.view/create/update`, `department.view` |
+| `user` | `employee.view`, `department.view` |
 
-| Seeded login | Password |
-|---|---|
-| `superadmin@example.com` | `SuperAdmin123!` |
-| `admin@example.com` | `Admin123!` |
-| `manager@example.com` | `Manager123!` |
-| `user@example.com` | `User1234!` |
+`admin` deliberately excludes `organization.manage_all`, which is what keeps a tenant
+administrator inside their own organization while still being a full admin of it.
+
+| Seeded login | Password | Tenant |
+|---|---|---|
+| `superadmin@example.com` | `SuperAdmin123!` | `platform` |
+| `admin@example.com` | `Admin123!` | `acme` |
+| `manager@example.com` | `Manager123!` | `acme` |
+| `user@example.com` | `User1234!` | `acme` |
+| `globex.admin@example.com` | `Globex123!` | `globex` |
 
 ### RBAC safety rails
 
@@ -439,10 +537,10 @@ caller cannot use. It is not a control. Every check is enforced server-side, and
 ## Testing
 
 ```bash
-npm test                  # 62 unit tests, no database needed
+npm test                  # 77 unit tests, no database needed
 
 npm run test:db:setup     # one-time: migrate + seed the separate auth_test database
-npm run test:integration  # 76 HTTP tests against a real Postgres
+npm run test:integration  # 105 HTTP tests against a real Postgres
 ```
 
 Integration tests delete rows, so they run against a **separate `auth_test` database** —

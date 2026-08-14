@@ -14,30 +14,63 @@ const prisma = new PrismaClient();
  * grants survive.
  */
 
+/**
+ * Two tenants on purpose: with everyone in one organization, a broken tenant
+ * filter would still look correct.
+ */
+const SEED_ORGANIZATIONS = [
+  {
+    slug: 'platform',
+    name: 'Platform',
+    description: 'Home tenant for platform administrators.',
+  },
+  {
+    slug: 'acme',
+    name: 'Acme Corporation',
+    description: 'Demo customer tenant.',
+  },
+  {
+    slug: 'globex',
+    name: 'Globex Industries',
+    description: 'Second demo tenant — used to prove data does not leak across organizations.',
+  },
+];
+
 const SEED_USERS = [
   {
     email: 'superadmin@example.com',
     name: 'Super Admin',
     password: 'SuperAdmin123!',
+    organization: 'platform',
     roles: [SystemRole.SUPER_ADMIN],
   },
   {
     email: 'admin@example.com',
     name: 'Admin User',
     password: 'Admin123!',
+    organization: 'acme',
     roles: [SystemRole.ADMIN],
   },
   {
     email: 'manager@example.com',
     name: 'Manager User',
     password: 'Manager123!',
+    organization: 'acme',
     roles: ['manager'],
   },
   {
     email: 'user@example.com',
     name: 'Regular User',
     password: 'User1234!',
+    organization: 'acme',
     roles: [SystemRole.USER],
+  },
+  {
+    email: 'globex.admin@example.com',
+    name: 'Globex Admin',
+    password: 'Globex123!',
+    organization: 'globex',
+    roles: [SystemRole.ADMIN],
   },
 ];
 
@@ -105,15 +138,41 @@ async function seedRoles(permissionIds: Map<string, string>): Promise<Map<string
   return byName;
 }
 
-async function seedUsers(roleIds: Map<string, string>): Promise<void> {
+async function seedOrganizations(): Promise<Map<string, string>> {
+  const bySlug = new Map<string, string>();
+
+  for (const entry of SEED_ORGANIZATIONS) {
+    const organization = await prisma.organization.upsert({
+      where: { slug: entry.slug },
+      update: { name: entry.name, description: entry.description },
+      create: { slug: entry.slug, name: entry.name, description: entry.description },
+    });
+    bySlug.set(organization.slug, organization.id);
+    console.log(`  organization ${organization.slug.padEnd(10)} ${organization.name}`);
+  }
+
+  return bySlug;
+}
+
+async function seedUsers(
+  roleIds: Map<string, string>,
+  organizationIds: Map<string, string>,
+): Promise<void> {
   for (const seed of SEED_USERS) {
     const passwordHash = await bcrypt.hash(seed.password, 12);
 
+    const organizationId = organizationIds.get(seed.organization);
+    if (!organizationId) {
+      throw new Error(`Seed organization "${seed.organization}" was not created`);
+    }
+
     const user = await prisma.user.upsert({
       where: { email: seed.email },
-      // Existing accounts keep their password; only new ones are created.
-      update: {},
-      create: { email: seed.email, name: seed.name, passwordHash },
+      // Existing accounts keep their password; only their tenant is corrected,
+      // so re-running the seed after the organizations migration re-homes the
+      // accounts that were parked in "Default Organization".
+      update: { organizationId },
+      create: { email: seed.email, name: seed.name, passwordHash, organizationId },
     });
 
     const ids = seed.roles
@@ -128,7 +187,9 @@ async function seedUsers(roleIds: Map<string, string>): Promise<void> {
       }),
     ]);
 
-    console.log(`  ${user.email.padEnd(26)} ${seed.roles.join(', ').padEnd(12)} password: ${seed.password}`);
+    console.log(
+      `  ${user.email.padEnd(26)} ${seed.organization.padEnd(9)} ${seed.roles.join(', ').padEnd(12)} password: ${seed.password}`,
+    );
   }
 }
 
@@ -137,14 +198,19 @@ async function main(): Promise<void> {
     throw new Error('Refusing to seed a production database');
   }
 
+  console.log('Seeding organizations...');
+  const organizationIds = await seedOrganizations();
+
   console.log('Seeding RBAC...');
   const permissionIds = await seedPermissions();
   const roleIds = await seedRoles(permissionIds);
 
   console.log('Seeding users...');
-  await seedUsers(roleIds);
+  await seedUsers(roleIds, organizationIds);
 
   console.log('\nDone. Super Admin holds "*" — it covers modules added later with no reseed.');
+  console.log('Only Super Admin has organization.manage_all, so every other account is');
+  console.log('confined to its own tenant.');
 }
 
 main()

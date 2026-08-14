@@ -13,12 +13,38 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// A tenant. Every user belongs to exactly one, and all tenant-scoped queries
+/// filter on it — see `src/utils/tenant.ts`.
+model Organization {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String
+  /// URL-safe identifier, derived from the name at creation.
+  slug        String  @unique
+  description String?
+  /// Deactivating an organization blocks sign-in for all of its users.
+  isActive    Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users User[]
+
+  @@index([isActive])
+  @@map("organizations")
+}
+
 model User {
   id           String  @id @default(uuid()) @db.Uuid
+  /// Globally unique, so sign-in needs no tenant hint from the caller.
   email        String  @unique
   passwordHash String  @map("password_hash")
   name         String?
   isActive     Boolean @default(true) @map("is_active")
+
+  /// Required: a user with no organization could not be scoped by any query,
+  /// so the invariant is enforced by the column, not by convention.
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -27,6 +53,7 @@ model User {
   /// A user may hold several roles; their effective permissions are the union.
   roles UserRole[]
 
+  @@index([organizationId])
   @@map("users")
 }
 
