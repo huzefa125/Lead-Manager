@@ -1,0 +1,138 @@
+// Prisma schema — authentication + RBAC.
+//
+// Authorization is data-driven: roles and permissions are rows, not enum values
+// or code constants. A new module is added by inserting permission rows, with
+// no change to the authorization logic.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String  @id @default(uuid()) @db.Uuid
+  email        String  @unique
+  passwordHash String  @map("password_hash")
+  name         String?
+  isActive     Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+  /// A user may hold several roles; their effective permissions are the union.
+  roles UserRole[]
+
+  @@map("users")
+}
+
+/// One row per active session, keyed to a user.
+///
+/// Only the SHA-256 hash of the token secret is stored, never the token itself
+/// — a database dump therefore does not hand over usable sessions.
+/// Logout deletes the row outright, so "exists and unexpired" is the whole
+/// validity check.
+model RefreshToken {
+  id        String   @id @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  userAgent String?  @map("user_agent")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// A named bundle of permissions, e.g. `super_admin`, `admin`, `manager`.
+model Role {
+  id          String  @id @default(uuid()) @db.Uuid
+  /// Stable machine key, lower_snake_case. Referenced by seeds and code.
+  name        String  @unique
+  /// Human-facing label for admin UIs.
+  displayName String  @map("display_name")
+  description String?
+  /// System roles are seeded and cannot be renamed or deleted through the API.
+  isSystem    Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@index([isSystem])
+  @@map("roles")
+}
+
+/// A single grantable capability, addressed as `resource.operation`.
+///
+/// `action` is the whole string (`employee.create`) and is what code checks.
+/// `resource`/`operation` are the parsed halves, stored so the API can group
+/// and filter by module without parsing strings in SQL.
+///
+/// Wildcards are ordinary rows: `*` grants everything, `employee.*` grants
+/// every operation on employees. This is what lets Super Admin cover modules
+/// that do not exist yet.
+model Permission {
+  id          String  @id @default(uuid()) @db.Uuid
+  action      String  @unique
+  resource    String
+  operation   String
+  description String?
+  isSystem    Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  roles RolePermission[]
+
+  @@index([resource])
+  @@index([isSystem])
+  @@map("permissions")
+}
+
+/// User ↔ Role join. Composite primary key makes a duplicate assignment
+/// impossible at the database level.
+model UserRole {
+  userId String @map("user_id") @db.Uuid
+  roleId String @map("role_id") @db.Uuid
+
+  assignedAt   DateTime @default(now()) @map("assigned_at")
+  /// Who granted this role — kept for audit. Nullable: seeded assignments have
+  /// no actor, and the grantor may later be deleted.
+  assignedById String?  @map("assigned_by_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+/// Role ↔ Permission join. Deleting either side cascades, so a removed
+/// permission cannot linger as a dangling grant.
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}

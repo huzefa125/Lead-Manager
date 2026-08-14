@@ -1,0 +1,241 @@
+### Manual smoke test — VS Code REST Client / JetBrains HTTP Client.
+### Run top to bottom; later requests reuse variables captured from earlier ones.
+
+@host = http://localhost:4000
+@email = demo@example.com
+@password = CorrectHorse1
+
+### Liveness
+GET {{host}}/health
+
+### Readiness (verifies the database connection)
+GET {{host}}/health/ready
+
+### Register — 201, sets the refresh cookie
+# @name register
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}",
+  "name": "Demo User"
+}
+
+@accessToken = {{register.response.body.data.accessToken}}
+
+### Duplicate email — expect 409 CONFLICT
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "{{password}}" }
+
+### Weak password — expect 422 with per-field details
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "email": "weak@example.com", "password": "weak" }
+
+### Role injection is ignored — response shows "role": "USER"
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "email": "escalate@example.com", "password": "{{password}}", "role": "ADMIN" }
+
+### Login — 200, new session
+# @name login
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "{{password}}" }
+
+@loginToken = {{login.response.body.data.accessToken}}
+
+### Wrong password — expect 401 INVALID_CREDENTIALS
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "WrongPassword1" }
+
+### Unknown email — byte-identical response to the request above
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "nobody@example.com", "password": "{{password}}" }
+
+### Protected route — 200. Verified in memory, no database query.
+GET {{host}}/api/auth/me
+Authorization: Bearer {{loginToken}}
+
+### No token — expect 401
+GET {{host}}/api/auth/me
+
+### Garbage token — expect 401 TOKEN_INVALID
+GET {{host}}/api/auth/me
+Authorization: Bearer not.a.real.jwt
+
+### Swagger UI (open in a browser)
+GET {{host}}/api/docs
+
+### Raw OpenAPI spec — import into Postman / feed to a client generator
+GET {{host}}/api/docs.json
+
+### Refresh — uses the cookie the client already holds. No Authorization header.
+### Returns a new access token AND rotates the refresh cookie.
+POST {{host}}/api/auth/refresh
+
+### Refresh again — works, because the client now holds the rotated cookie.
+POST {{host}}/api/auth/refresh
+
+### Logout — deletes the refresh token row and clears the cookie
+POST {{host}}/api/auth/logout
+
+### Refresh after logout — expect 401. This is what server-side storage buys.
+POST {{host}}/api/auth/refresh
+
+### Sign out everywhere (needs a fresh login first)
+POST {{host}}/api/auth/logout-all
+Authorization: Bearer {{loginToken}}
+
+### Unknown route — expect 404 in the standard envelope
+GET {{host}}/api/nope
+
+
+### ==========================================================================
+### RBAC
+### ==========================================================================
+
+### Sign in as Super Admin (holds "*")
+# @name su
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "superadmin@example.com", "password": "SuperAdmin123!" }
+
+@su = {{su.response.body.data.accessToken}}
+
+### Sign in as a plain user (read-only)
+# @name plain
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "user@example.com", "password": "User1234!" }
+
+@plain = {{plain.response.body.data.accessToken}}
+
+### Super Admin can list roles — expect 200
+GET {{host}}/api/roles
+Authorization: Bearer {{su}}
+
+### Plain user cannot — expect 403, message names "role.view"
+GET {{host}}/api/roles
+Authorization: Bearer {{plain}}
+
+### No token at all — expect 401 (not 403)
+GET {{host}}/api/roles
+
+### List permissions, grouped by module
+GET {{host}}/api/permissions?limit=100
+Authorization: Bearer {{su}}
+
+### Filter permissions to one module
+GET {{host}}/api/permissions?resource=employee
+Authorization: Bearer {{su}}
+
+### --- Adding a brand new module, with no code change ---
+
+### 1. Register the capability — resource/operation are derived
+# @name newPerm
+POST {{host}}/api/permissions
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "action": "invoice.approve", "description": "Approve invoices" }
+
+### 2. Create a role that grants it
+# @name approver
+POST {{host}}/api/roles
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{
+  "name": "invoice_approver",
+  "displayName": "Invoice Approver",
+  "permissions": ["invoice.approve"]
+}
+
+@roleId = {{approver.response.body.data.role.id}}
+
+### 3. Gate a route with authorize("invoice.approve") — Super Admin already passes it.
+
+### Unknown permission is rejected and named — expect 422
+POST {{host}}/api/roles
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "name": "broken_role", "displayName": "Broken", "permissions": ["typo.oops"] }
+
+### Replace a role's grants (transactional)
+PUT {{host}}/api/roles/{{roleId}}/permissions
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "permissions": ["invoice.approve", "employee.view"] }
+
+### Add grants incrementally
+POST {{host}}/api/roles/{{roleId}}/permissions
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "permissions": ["department.view"] }
+
+### Revoke grants
+DELETE {{host}}/api/roles/{{roleId}}/permissions
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "permissions": ["department.view"] }
+
+### --- Assigning roles to users ---
+
+### Find a user
+# @name users
+GET {{host}}/api/users?search=manager@example.com
+Authorization: Bearer {{su}}
+
+@userId = {{users.response.body.data.users.0.id}}
+
+### Give them TWO roles at once — permissions become the union.
+### This also deletes that user's refresh tokens, so the change applies immediately.
+PUT {{host}}/api/users/{{userId}}/roles
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "roles": ["manager", "invoice_approver"] }
+
+### Add a role without removing existing ones
+POST {{host}}/api/users/{{userId}}/roles
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "roles": ["user"] }
+
+### Remove a role
+DELETE {{host}}/api/users/{{userId}}/roles
+Authorization: Bearer {{su}}
+Content-Type: application/json
+
+{ "roles": ["invoice_approver"] }
+
+### --- Guard rails (all expected to fail) ---
+
+### Plain user cannot promote themselves — expect 403
+PUT {{host}}/api/users/{{userId}}/roles
+Authorization: Bearer {{plain}}
+Content-Type: application/json
+
+{ "roles": ["super_admin"] }
+
+### Cleanup: delete the demo role (works only once nobody holds it)
+DELETE {{host}}/api/roles/{{roleId}}
+Authorization: Bearer {{su}}
