@@ -566,6 +566,462 @@ describe('lead engine', () => {
     });
   });
 
+  // --- Leakage -----------------------------------------------------------
+
+  describe('leakage', () => {
+    /**
+     * Every threshold is overridable, so instead of backdating fixtures these
+     * tests set the relevant threshold to a hair above zero — a state created
+     * a moment ago has already "aged past" a threshold measured in
+     * thousandths of a day or hour. Real wall-clock time, no fixture skew.
+     */
+    const leakageQuery = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+      sourceId,
+      ...extra,
+    });
+
+    const findGroup = (
+      response: request.Response,
+      type: string,
+    ): { count: number; atRiskValue: number; leads: { lead: { id: string } }[] } =>
+      response.body.data.leaks.find((group: { type: string }) => group.type === type);
+
+    it('flags a lead assigned but never contacted', async () => {
+      const lead = await capture({ email: 'noreach@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ assignedTooLongHours: 0.0000001 }))
+        .expect(200);
+
+      const group = findGroup(response, 'assigned_not_contacted');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+    });
+
+    it('flags a contacted lead with nothing logged since', async () => {
+      const lead = await capture({ email: 'silent@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ noFollowUpDays: 0.0000001 }))
+        .expect(200);
+
+      const group = findGroup(response, 'no_followup_after_contact');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+    });
+
+    it('flags a quotation with no follow-up', async () => {
+      const lead = await capture({ email: 'quote@ltest.example.com' });
+      await logActivity(lead.id, { type: 'QUOTATION', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ quoteStaleDays: 0.0000001 }))
+        .expect(200);
+
+      const group = findGroup(response, 'quote_sent_no_followup');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+    });
+
+    it('flags a meeting with no next step', async () => {
+      const lead = await capture({ email: 'meeting@ltest.example.com' });
+      await logActivity(lead.id, { type: 'MEETING', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ meetingStaleDays: 0.0000001 }))
+        .expect(200);
+
+      const group = findGroup(response, 'meeting_no_next_step');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+    });
+
+    it('flags a hot lead — replied and followed up — gone quiet', async () => {
+      const lead = await capture({ email: 'hot@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'INBOUND' });
+      await logActivity(lead.id, { type: 'FOLLOW_UP', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ hotInactiveDays: 0.0000001 }))
+        .expect(200);
+
+      const group = findGroup(response, 'hot_lead_gone_cold');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+    });
+
+    it('flags a lead stuck with its salesperson', async () => {
+      const lead = await capture({ email: 'stuck@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ stuckInStageDays: 0.0000001 }))
+        .expect(200);
+
+      const group = findGroup(response, 'stuck_with_salesperson');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+    });
+
+    it('flags first contact that came long after capture, but not as live risk', async () => {
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      const lead = await capture({ email: 'latecontact@ltest.example.com', capturedAt: twoDaysAgo });
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ lateContactHours: 1 }))
+        .expect(200);
+
+      const group = findGroup(response, 'late_first_contact');
+      expect(group.leads.map((entry) => entry.lead.id)).toContain(lead.id);
+      // Historical response-time signal, not live pipeline value.
+      expect(group.atRiskValue).toBe(0);
+    });
+
+    it('does not flag a lost lead that recorded a reason', async () => {
+      const lead = await capture({ email: 'lostwithreason@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/stage`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ stageKey: 'lost', lostReason: 'Budget' })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery())
+        .expect(200);
+
+      const group = findGroup(response, 'lost_without_reason');
+      expect(group.leads.map((entry) => entry.lead.id)).not.toContain(lead.id);
+    });
+
+    it('flags duplicate open leads created outside the capture endpoint', async () => {
+      // `POST /leads` — unlike `/leads/capture` — does not merge on identity,
+      // which is exactly the gap this rule exists to catch.
+      const phone = '+91 90011 22334';
+      const first = await request(app)
+        .post('/api/leads')
+        .set(auth(tokens.acmeAdmin))
+        .send({ sourceKey: TEST_SOURCE_KEY, phone, firstName: 'Ravi' })
+        .expect(201);
+      const second = await request(app)
+        .post('/api/leads')
+        .set(auth(tokens.acmeAdmin))
+        .send({ sourceKey: TEST_SOURCE_KEY, phone, firstName: 'Ravi K' })
+        .expect(201);
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery())
+        .expect(200);
+
+      const ids = response.body.data.duplicates.flatMap(
+        (group: { leads: { id: string }[] }) => group.leads.map((lead) => lead.id),
+      );
+      expect(ids).toContain(first.body.data.lead.id);
+      expect(ids).toContain(second.body.data.lead.id);
+    });
+
+    it('flags a source that has gone silent', async () => {
+      await capture({ email: 'silentsource@ltest.example.com' });
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, silentSourceDays: 0.0000001 })
+        .expect(200);
+
+      const flagged = response.body.data.silentSources.map(
+        (entry: { source: { key: string } }) => entry.source.key,
+      );
+      expect(flagged).toContain(TEST_SOURCE_KEY);
+    });
+
+    it('rolls at-risk leads and value into the summary and headlines', async () => {
+      await capture({ email: 'summary@ltest.example.com', estimatedValue: 50000 }).then((lead) =>
+        logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' }),
+      );
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.acmeAdmin))
+        .query(leakageQuery({ noFollowUpDays: 0.0000001 }))
+        .expect(200);
+
+      expect(response.body.data.summary.totalOpenLeadsAtRisk).toBeGreaterThanOrEqual(1);
+      expect(response.body.data.summary.totalAtRiskValue).toBeGreaterThanOrEqual(50000);
+      expect(response.body.data.headlines.length).toBeGreaterThan(0);
+      // Named honestly rather than silently omitted.
+      expect(response.body.data.outOfScope.length).toBeGreaterThan(0);
+    });
+  });
+
+  // --- Response times ----------------------------------------------------
+
+  describe('response time intelligence', () => {
+    const findMetric = (
+      response: request.Response,
+      key: string,
+    ): {
+      count: number;
+      averageHours: number | null;
+      bySalesperson?: { id: string; count: number; averageHours: number }[];
+      best?: { id: string } | null;
+      worst?: { id: string } | null;
+    } => response.body.data.metrics.find((metric: { key: string }) => metric.key === key);
+
+    it('measures lead received → assigned, with no salesperson ranking', async () => {
+      const lead = await capture({ email: 'rt-assign@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId })
+        .expect(200);
+
+      const metric = findMetric(response, 'captured_to_assigned');
+      expect(metric.count).toBeGreaterThanOrEqual(1);
+      expect(metric.averageHours).not.toBeNull();
+      expect(metric.bySalesperson).toBeUndefined();
+    });
+
+    it('measures assigned → first contact and ranks the salesperson', async () => {
+      const lead = await capture({ email: 'rt-contact@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, minSampleSize: 1 })
+        .expect(200);
+
+      const metric = findMetric(response, 'assigned_to_first_contact');
+      expect(metric.count).toBeGreaterThanOrEqual(1);
+      expect(metric.bySalesperson?.some((entry) => entry.id === acmeManagerId)).toBe(true);
+      expect(metric.best?.id).toBe(acmeManagerId);
+    });
+
+    it('measures first contact → reply', async () => {
+      const lead = await capture({ email: 'rt-reply@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'INBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId })
+        .expect(200);
+
+      expect(findMetric(response, 'first_contact_to_reply').count).toBeGreaterThanOrEqual(1);
+    });
+
+    it('measures reply → salesperson response', async () => {
+      const lead = await capture({ email: 'rt-turnaround@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+      await logActivity(lead.id, { type: 'CALL', direction: 'INBOUND' });
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, minSampleSize: 1 })
+        .expect(200);
+
+      const metric = findMetric(response, 'reply_to_salesperson_response');
+      expect(metric.count).toBeGreaterThanOrEqual(1);
+      expect(metric.bySalesperson?.some((entry) => entry.id === acmeManagerId)).toBe(true);
+    });
+
+    it('measures meeting → follow-up and quote → follow-up', async () => {
+      const lead = await capture({ email: 'rt-nextstep@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+      await logActivity(lead.id, { type: 'MEETING', direction: 'OUTBOUND' });
+      await logActivity(lead.id, { type: 'FOLLOW_UP', direction: 'OUTBOUND' });
+      await logActivity(lead.id, { type: 'QUOTATION', direction: 'OUTBOUND' });
+      await logActivity(lead.id, { type: 'FOLLOW_UP', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId })
+        .expect(200);
+
+      expect(findMetric(response, 'meeting_to_follow_up').count).toBeGreaterThanOrEqual(1);
+      expect(findMetric(response, 'quote_to_follow_up').count).toBeGreaterThanOrEqual(1);
+    });
+
+    it('correlates slow contact with loss, and produces a headline', async () => {
+      const lead = await capture({ email: 'rt-correlation@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/stage`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ stageKey: 'lost', lostReason: 'Budget' })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        // A near-zero elapsed time already exceeds a threshold this small.
+        .query({ sourceId, contactSpeedThresholdHours: 0.0000001 })
+        .expect(200);
+
+      const { speedToLossCorrelation } = response.body.data;
+      expect(speedToLossCorrelation.afterThreshold.count).toBeGreaterThanOrEqual(1);
+      expect(speedToLossCorrelation.afterThreshold.lostCount).toBeGreaterThanOrEqual(1);
+      expect(speedToLossCorrelation.headline).toContain('%');
+      expect(speedToLossCorrelation.byBucket).toHaveLength(6);
+    });
+
+    it('builds headlines from the first-response metric and the correlation', async () => {
+      const lead = await capture({ email: 'rt-headline@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, minSampleSize: 1 })
+        .expect(200);
+
+      expect(response.body.data.headlines.some((line: string) => line.startsWith('Average first response:'))).toBe(
+        true,
+      );
+    });
+  });
+
+  // --- Follow-up dashboard -------------------------------------------------
+
+  describe('follow-up dashboard', () => {
+    const dueLeadIds = (response: request.Response): string[] =>
+      response.body.data.groups.flatMap((group: { leads: { lead: { id: string } }[] }) =>
+        group.leads.map((entry) => entry.lead.id),
+      );
+
+    it('flags a lead where the salesperson replied last and it has gone quiet', async () => {
+      const lead = await capture({ email: 'fu-quiet@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'INBOUND' }); // lead replied
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'OUTBOUND' }); // salesperson replied
+
+      const response = await request(app)
+        .get('/api/leads/follow-ups')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, followUpAfterDays: 0.0000001 })
+        .expect(200);
+
+      expect(dueLeadIds(response)).toContain(lead.id);
+    });
+
+    it('does not flag a lead whose own message is the most recent', async () => {
+      const lead = await capture({ email: 'fu-unanswered@ltest.example.com' });
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'OUTBOUND' });
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'INBOUND' }); // the rep owes a reply
+
+      const response = await request(app)
+        .get('/api/leads/follow-ups')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, followUpAfterDays: 0.0000001 })
+        .expect(200);
+
+      expect(dueLeadIds(response)).not.toContain(lead.id);
+    });
+
+    it('does not flag a lead that was contacted but never replied', async () => {
+      const lead = await capture({ email: 'fu-cold@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/follow-ups')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, followUpAfterDays: 0.0000001 })
+        .expect(200);
+
+      expect(dueLeadIds(response)).not.toContain(lead.id);
+    });
+
+    it('does not flag a closed lead', async () => {
+      const lead = await capture({ email: 'fu-closed@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'INBOUND' });
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'OUTBOUND' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/stage`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ stageKey: 'lost', lostReason: 'Budget' })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/follow-ups')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, followUpAfterDays: 0.0000001 })
+        .expect(200);
+
+      expect(dueLeadIds(response)).not.toContain(lead.id);
+    });
+
+    it('reports the dashboard shape — three fixed buckets and matching headlines', async () => {
+      const lead = await capture({ email: 'fu-dashboard@ltest.example.com' });
+      await logActivity(lead.id, { type: 'CALL', direction: 'INBOUND' });
+      await logActivity(lead.id, { type: 'EMAIL', direction: 'OUTBOUND' });
+
+      const response = await request(app)
+        .get('/api/leads/follow-ups')
+        .set(auth(tokens.acmeAdmin))
+        .query({ sourceId, followUpAfterDays: 0.0000001 })
+        .expect(200);
+
+      const { summary, groups, headlines } = response.body.data;
+      expect(groups.map((g: { urgency: string }) => g.urgency)).toEqual(['today', 'overdue', 'critical']);
+      expect(summary.totalDue).toBe(summary.today + summary.overdue + summary.critical);
+      expect(headlines).toEqual([
+        `Today: ${summary.today}`,
+        `Overdue: ${summary.overdue}`,
+        `Critical: ${summary.critical}`,
+      ]);
+    });
+  });
+
   // --- Isolation and authorization ------------------------------------------
 
   describe('tenant isolation', () => {
@@ -602,6 +1058,52 @@ describe('lead engine', () => {
 
       expect(response.body.data.totals.captured).toBe(0);
     });
+
+    it('keeps another tenant out of the leakage report', async () => {
+      const lead = await capture({ email: 'privateleak@ltest.example.com' });
+      await request(app)
+        .put(`/api/leads/${lead.id}/assignment`)
+        .set(auth(tokens.acmeAdmin))
+        .send({ assignedToId: acmeManagerId })
+        .expect(200);
+
+      const response = await request(app)
+        .get('/api/leads/leakage')
+        .set(auth(tokens.globexAdmin))
+        .query({ assignedTooLongHours: 0.0000001 })
+        .expect(200);
+
+      const group = response.body.data.leaks.find(
+        (g: { type: string }) => g.type === 'assigned_not_contacted',
+      );
+      expect(group.count).toBe(0);
+    });
+
+    it('keeps another tenant out of the response-time report', async () => {
+      await capture({ email: 'privatert@ltest.example.com' });
+
+      const response = await request(app)
+        .get('/api/leads/response-times')
+        .set(auth(tokens.globexAdmin))
+        .expect(200);
+
+      const metric = response.body.data.metrics.find(
+        (m: { key: string }) => m.key === 'captured_to_assigned',
+      );
+      expect(metric.count).toBe(0);
+    });
+
+    it('keeps another tenant out of the follow-up dashboard', async () => {
+      await capture({ email: 'privatefu@ltest.example.com' });
+
+      const response = await request(app)
+        .get('/api/leads/follow-ups')
+        .set(auth(tokens.globexAdmin))
+        .query({ followUpAfterDays: 0.0000001 })
+        .expect(200);
+
+      expect(response.body.data.summary.totalDue).toBe(0);
+    });
   });
 
   describe('authorization', () => {
@@ -635,6 +1137,9 @@ describe('lead engine', () => {
     it('requires authentication', async () => {
       await request(app).get('/api/leads').expect(401);
       await request(app).get('/api/leads/funnel').expect(401);
+      await request(app).get('/api/leads/leakage').expect(401);
+      await request(app).get('/api/leads/response-times').expect(401);
+      await request(app).get('/api/leads/follow-ups').expect(401);
     });
   });
 

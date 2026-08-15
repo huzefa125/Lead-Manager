@@ -180,6 +180,9 @@ Base URL `/api`. Every response — success or failure — uses one envelope:
 | `DELETE` | `/api/users/:id/roles` | Bearer | `role.assign` | Remove roles |
 | `POST` | `/api/leads/capture` | Bearer | `lead.capture` | **Integration entry point** — capture from any channel |
 | `GET` | `/api/leads/funnel` | Bearer | `lead.view` | The journey funnel + where it breaks |
+| `GET` | `/api/leads/leakage` | Bearer | `lead.view` | Which open leads are rotting right now, and how much value is at risk |
+| `GET` | `/api/leads/response-times` | Bearer | `lead.view` | Six response-time gaps, per salesperson, and whether slow contact costs deals |
+| `GET` | `/api/leads/follow-ups` | Bearer | `lead.view` | The daily dashboard — follow-ups due today, overdue, and critical |
 | `GET` | `/api/leads` | Bearer | `lead.view` | List, filter, search |
 | `POST` | `/api/leads` | Bearer | `lead.create` | Create manually or by import |
 | `GET` | `/api/leads/:id` | Bearer | `lead.view` | Get a lead |
@@ -298,6 +301,12 @@ src/
 │                    activity.service.ts — the timeline
 │                    catalog.service.ts  — sources and stages
 │                    funnel.service.ts   — reporting
+│                    lead-leakage.ts     — leakage rules + duplicate/silent-source detection (pure)
+│                    leakage.service.ts  — leakage report assembly + headlines
+│                    response-time.ts    — response-time gaps, ranking, loss correlation (pure)
+│                    response-time.service.ts — response-time report assembly + headlines
+│                    follow-up.ts        — the follow-up state machine (pure)
+│                    follow-up.service.ts — follow-up dashboard assembly
 ├── users/           repository, service, serializer, types
 ├── middleware/      authenticate, authorize, validate, error-handler,
 │                    rate-limit, request-id, not-found
@@ -783,6 +792,157 @@ captured — otherwise it falls every time marketing has a good month.
 **Cost.** The funnel is four indexed aggregates over the milestone columns. Nothing replays the
 activity table, so the cost of a report does not grow with how hard the team has been working.
 
+### Lead leakage detection
+
+```http
+GET /api/leads/leakage?sourceId=...
+Authorization: Bearer <token>
+```
+
+The funnel says how far leads got. This says **which open leads are quietly rotting right now**,
+and how much pipeline value sits behind them — the number a sales manager actually needs on a
+Monday morning:
+
+```jsonc
+{
+  "summary": { "totalOpenLeadsAtRisk": 41, "totalAtRiskValue": 840000, "currency": "INR" },
+  "headlines": [
+    "🔴 23 leads have had no follow-up for 5+ days",
+    "🔴 6 quotes were sent with no follow-up in 3+ days",
+    "🔴 4 leads were assigned but never contacted (48+ hours)",
+    "🔴 ₹8.4L estimated pipeline is currently at risk"
+  ]
+}
+```
+
+**Eight rules, run against every open lead:**
+
+| Rule | Flags when | Default threshold |
+|---|---|---|
+| Assigned, never contacted | `assignedAt` set, `firstContactAt` still null | 48 hours |
+| Contacted too late | `firstContactAt − capturedAt` exceeds the threshold | 24 hours |
+| No follow-up after contact | Contacted, then nothing logged since | 5 days |
+| Quote sent, no follow-up | `quotationSentAt` set, nothing logged since | 3 days |
+| Meeting, no next step | Met, no quotation, nothing logged since | 3 days |
+| Hot lead gone cold | Replied *and* was followed up at least once, then silence | 4 days |
+| Stuck with salesperson | Owned, hasn't changed stage in a long time | 10 days |
+| Marked lost, no reason | `status = LOST`, `lostReason` empty | — |
+
+Plus two checks that aren't per-lead thresholds:
+
+- **Duplicate leads** — open leads sharing an email, phone or WhatsApp number. Capture already
+  merges duplicates on the way in (`findOpenDuplicate`); this catches what got past it —
+  `POST /leads` (the manual/import path) does not dedupe, on purpose, since an import legitimately
+  knows things capture cannot.
+- **Silent sources** — an active lead source that has captured leads before but not recently.
+
+**Every threshold is overridable per request** (`?noFollowUpDays=3`), and every rule fires
+independently — a lead can trip several at once. `summary.totalOpenLeadsAtRisk` and
+`totalAtRiskValue` are de-duplicated across all of them, so a lead counted by three rules is
+still one lead and one value. `late_first_contact` and `lost_without_reason` are historical/hygiene
+signals rather than live risk — closed business isn't "at risk" — so they report a count but
+contribute nothing to `atRiskValue`.
+
+**What this deliberately does not claim to detect.** Two leak types are real but out of reach of
+this API: leads that disappear between systems, and leads an ad platform says it delivered that
+never reached the CRM. Both need visibility this service does not have — an upstream system's own
+delivery log, or an ad platform's own lead count — and inventing a number without that data would
+be worse than not reporting one. The response's `outOfScope` field says so explicitly rather than
+silently omitting the capability. `silentSources` is the closest honest proxy available from data
+already inside the CRM: an active channel that has captured leads before and has now gone quiet is
+the visible symptom of exactly that failure mode, even without visibility into its cause.
+
+### Response time intelligence
+
+```http
+GET /api/leads/response-times?sourceId=...
+Authorization: Bearer <token>
+```
+
+Six gaps in the journey, each measured in hours:
+
+| Gap | Measures | Attributed to a salesperson? |
+|---|---|---|
+| Lead received → assigned | Routing speed | No — a routing decision, not a rep's |
+| Assigned → first contact | **Speed to lead** — the classic sales SLA | Yes |
+| First contact → reply | How fast the lead answers | No — the lead's behaviour, not the rep's |
+| Reply → salesperson response | Conversation turnaround after the lead engages | Yes |
+| Meeting → follow-up | Time to the next touch after a meeting | Yes |
+| Quote → follow-up | Time to the next touch after pricing goes out | Yes |
+
+Two gaps are deliberately **not** ranked by salesperson: who gets assigned a lead is a routing
+decision, and how fast a lead replies is the lead's behaviour — scoring a rep on either would
+grade them on someone else's speed. The four that remain are ranked fastest-to-slowest, with a
+`minSampleSize` floor (default 3) so a rep with one lucky fast lead cannot be crowned "best
+salesperson" off a sample of one.
+
+```jsonc
+{
+  "headlines": [
+    "Average first response: 4h 17m",
+    "Best salesperson: Priya Nair — 18m",
+    "Worst salesperson: Arjun Rao — 11h 42m",
+    "34% of leads contacted after 2 hours are being lost."
+  ]
+}
+```
+
+**The correlation the funnel and the leakage report can't answer: does contacting a lead late
+actually cost the deal.** `speedToLossCorrelation` takes every lead that reached a decision — won
+or lost, an open lead has not lost yet — and splits it at `contactSpeedThresholdHours` (default 2),
+reporting the loss rate on each side plus the full six-bucket curve (`0–1h` … `24h+`) in
+`byBucket`, so the report shows the shape of the curve, not just one cut through it.
+
+**Where the numbers come from.** `captured_to_assigned`, `assigned_to_first_contact` and
+`first_contact_to_reply` read straight off the milestone columns. The other three ask "what
+happened *next*" — `lastFollowUpAt` only tracks the *latest* follow-up ever logged, not the one
+that actually came right after a specific meeting or quote — so those three scan the activity
+timeline instead, the same trade-off the funnel's response-time averages already make.
+
+### Follow-up failure detection
+
+```http
+GET /api/leads/follow-ups
+Authorization: Bearer <token>
+```
+
+Checks one specific state machine on every open lead:
+
+```
+Lead replied → Salesperson replied → No response for 3 days → Follow-up required
+```
+
+This is narrower than leakage's `no_followup_after_contact`, and deliberately so. It only fires
+once a **real back-and-forth was established** — the lead answered at least once — **and the
+salesperson made the last move**. A lead that was called once and never replied is a different,
+earlier failure (that's what `no_followup_after_contact` is for). A lead whose own message is the
+most recent is excluded too — that means the *rep* owes a reply, which is a response-time problem
+(`reply_to_salesperson_response` on `/leads/response-times`), not a forgotten follow-up.
+
+```jsonc
+{
+  "summary": { "today": 18, "overdue": 11, "critical": 5, "totalDue": 34, "totalAtRiskValue": 4120000 },
+  "headlines": ["Today: 18", "Overdue: 11", "Critical: 5"]
+}
+```
+
+**Three urgency tiers**, driven by two thresholds (`followUpAfterDays`, default 3;
+`criticalOverdueDays`, default 4 — a full week of silence in total):
+
+| Tier | Meaning |
+|---|---|
+| `today` | Just crossed the silence threshold within the last day |
+| `overdue` | Past due, short of critical |
+| `critical` | `criticalOverdueDays` past the threshold — a full week of silence by default |
+
+`groups` always returns exactly three entries, even when a bucket is empty, so a dashboard can
+render three tiles ("Today: 18 / Overdue: 11 / Critical: 5") without conditional logic.
+
+**Where the "last move" comes from.** Same activity-timeline scan the response-time report uses
+(the same `listConversationActivities` query, reused rather than duplicated): for each lead, the
+most recent conversation-type activity (excluding internal notes and tasks — a private reminder is
+not a response to the lead) determines both who moved last and when the silence clock started.
+
 ### Other queries worth knowing
 
 ```http
@@ -823,7 +983,7 @@ An unknown value inside a list filter is a **422, not a silent drop** — quietl
 ## Testing
 
 ```bash
-npm test                  # 142 unit tests, no database needed
+npm test                  # 224 unit tests, no database needed
 
 npm run test:db:setup     # one-time: migrate + seed the separate auth_test database
 npm run test:integration  # HTTP suite against a real Postgres
@@ -843,6 +1003,22 @@ milestones backfill earlier ones, that a milestone is never rewritten, that movi
 erases nothing, and that the funnel reports 127 → 89 → 54 → 31 → 18 → 7 with the right loss at each
 step. Everything the product shows about a funnel is derived from those functions, so a bug there
 is a bug in every number on the screen.
+
+Same treatment for the **leakage engine** ([lead-leakage.test.ts](tests/unit/lead-leakage.test.ts)):
+every rule tested at its threshold boundary, that a closed lead never trips a live-risk rule, that
+duplicate detection excludes closed leads and never flags a lead against itself, and that a silent
+source needs prior captures to be silent about. [lead.test.ts](tests/integration/lead.test.ts)
+drives the real endpoint end to end for each rule, tenant isolation, and authorization.
+
+And for **response time intelligence**
+([response-time.test.ts](tests/unit/response-time.test.ts)): that a negative gap is excluded rather
+than reported as fast, that salesperson ranking respects the minimum sample size, and that the
+speed-to-loss correlation excludes open leads and sums correctly across every bucket.
+
+And for **follow-up failure detection**
+([follow-up.test.ts](tests/unit/follow-up.test.ts)): that a lead only qualifies once the lead has
+actually replied and the salesperson moved last, that an unanswered inbound message is excluded
+(that's a different problem), and each urgency tier's boundary.
 
 The integration suite drives the real Express app with supertest and asserts the security
 properties directly — that the refresh token is absent from the response body, that only its

@@ -290,6 +290,71 @@ export const leadIdParamSchema = z.object({
   id: z.string().uuid('Must be a valid UUID'),
 });
 
+/**
+ * The response-time report's filters plus the two knobs that shape it: what
+ * counts as "late" for the speed-to-loss correlation, and how many leads a
+ * salesperson needs before their average is trusted enough to call them best
+ * or worst.
+ */
+export const responseTimeQuerySchema = z.object({
+  capturedFrom: z.coerce.date().optional(),
+  capturedTo: z.coerce.date().optional(),
+  sourceId: z.string().uuid().optional(),
+  channel: csvEnum(LeadChannel),
+  assignedToId: z.string().uuid().optional(),
+
+  /** "Contacted after N hours" in the speed-to-loss correlation. */
+  contactSpeedThresholdHours: z.coerce.number().positive().max(24 * 365).default(2),
+  /** A salesperson needs this many measured leads to qualify for best/worst. */
+  minSampleSize: z.coerce.number().int().positive().max(1000).default(3),
+});
+
+/**
+ * The follow-up dashboard's filters plus its two knobs: when silence first
+ * becomes a follow-up, and how many additional days of silence make it
+ * critical.
+ */
+export const followUpQuerySchema = z.object({
+  sourceId: z.string().uuid().optional(),
+  channel: csvEnum(LeadChannel),
+  assignedToId: z.string().uuid().optional(),
+
+  /** Leads shown per urgency bucket. The `count` on each is always the true total. */
+  sampleSize: z.coerce.number().int().positive().max(50).default(10),
+
+  /** Days of silence after the salesperson's last touch before a follow-up is due. */
+  followUpAfterDays: z.coerce.number().positive().max(365).optional(),
+  /** Additional days overdue, past `followUpAfterDays`, before it is "critical". */
+  criticalOverdueDays: z.coerce.number().positive().max(365).optional(),
+});
+
+/**
+ * The leakage report's filters plus its thresholds, all overridable.
+ *
+ * Every threshold has a product default (`DEFAULT_LEAKAGE_THRESHOLDS`) — these
+ * exist so a sales manager who wants "stuck" to mean 5 days, not 10, does not
+ * need a code change to say so.
+ */
+export const leakageQuerySchema = z.object({
+  capturedFrom: z.coerce.date().optional(),
+  capturedTo: z.coerce.date().optional(),
+  sourceId: z.string().uuid().optional(),
+  channel: csvEnum(LeadChannel),
+  assignedToId: z.string().uuid().optional(),
+
+  /** Leads shown per leak category. The `count` on each is always the true total. */
+  sampleSize: z.coerce.number().int().positive().max(50).default(10),
+
+  assignedTooLongHours: z.coerce.number().positive().max(24 * 365).optional(),
+  lateContactHours: z.coerce.number().positive().max(24 * 365).optional(),
+  noFollowUpDays: z.coerce.number().positive().max(3650).optional(),
+  quoteStaleDays: z.coerce.number().positive().max(3650).optional(),
+  meetingStaleDays: z.coerce.number().positive().max(3650).optional(),
+  hotInactiveDays: z.coerce.number().positive().max(3650).optional(),
+  stuckInStageDays: z.coerce.number().positive().max(3650).optional(),
+  silentSourceDays: z.coerce.number().positive().max(3650).optional(),
+});
+
 // --- Pipeline configuration -------------------------------------------------
 
 export const createLeadSourceSchema = z.object({
@@ -354,6 +419,9 @@ export type CreateActivityInput = z.infer<typeof createActivitySchema>;
 export type ListLeadsQuery = z.infer<typeof listLeadsQuerySchema>;
 export type ListActivitiesQuery = z.infer<typeof listActivitiesQuerySchema>;
 export type AnalyticsQuery = z.infer<typeof analyticsQuerySchema>;
+export type LeakageQuery = z.infer<typeof leakageQuerySchema>;
+export type ResponseTimeQuery = z.infer<typeof responseTimeQuerySchema>;
+export type FollowUpQuery = z.infer<typeof followUpQuerySchema>;
 export type CreateLeadSourceInput = z.infer<typeof createLeadSourceSchema>;
 export type UpdateLeadSourceInput = z.infer<typeof updateLeadSourceSchema>;
 export type CreateLeadStageInput = z.infer<typeof createLeadStageSchema>;

@@ -14,10 +14,13 @@ import {
   createLeadSchema,
   createLeadSourceSchema,
   createLeadStageSchema,
+  followUpQuerySchema,
   leadIdParamSchema,
+  leakageQuerySchema,
   listActivitiesQuerySchema,
   listLeadSourcesQuerySchema,
   listLeadsQuerySchema,
+  responseTimeQuerySchema,
   updateLeadSchema,
   updateLeadSourceSchema,
   updateLeadStageSchema,
@@ -35,6 +38,40 @@ leadRouter.get(
   authorize(Permissions.LEAD_VIEW),
   validate({ query: analyticsQuerySchema }),
   asyncHandler(controller.getFunnel),
+);
+
+/**
+ * The differentiator: which open leads are quietly rotting right now, and how
+ * much pipeline value sits behind them. Same permission as the funnel — both
+ * are read-only reporting over the same data.
+ */
+leadRouter.get(
+  '/leakage',
+  authorize(Permissions.LEAD_VIEW),
+  validate({ query: leakageQuerySchema }),
+  asyncHandler(controller.getLeakageReport),
+);
+
+/**
+ * Six gaps in the journey, per rep where the gap is a rep's to own, plus
+ * whether contacting a lead late is actually costing the deal.
+ */
+leadRouter.get(
+  '/response-times',
+  authorize(Permissions.LEAD_VIEW),
+  validate({ query: responseTimeQuerySchema }),
+  asyncHandler(controller.getResponseTimeReport),
+);
+
+/**
+ * Lead replied → salesperson replied → silence for N days → follow-up
+ * required. The dashboard a manager opens first thing in the morning.
+ */
+leadRouter.get(
+  '/follow-ups',
+  authorize(Permissions.LEAD_VIEW),
+  validate({ query: followUpQuerySchema }),
+  asyncHandler(controller.getFollowUpDashboard),
 );
 
 /**

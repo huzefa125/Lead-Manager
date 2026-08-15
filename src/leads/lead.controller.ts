@@ -4,7 +4,10 @@ import { sendSuccess } from '../utils/api-response';
 import type { AuthenticatedUser } from '../users/user.types';
 import * as activityService from './activity.service';
 import * as catalogService from './catalog.service';
+import * as followUpService from './follow-up.service';
 import * as funnelService from './funnel.service';
+import * as leakageService from './leakage.service';
+import * as responseTimeService from './response-time.service';
 import { SYSTEM_ACTIVITY_TYPES } from './lead.constants';
 import * as leadService from './lead.service';
 import {
@@ -24,9 +27,12 @@ import type {
   CreateLeadInput,
   CreateLeadSourceInput,
   CreateLeadStageInput,
+  FollowUpQuery,
+  LeakageQuery,
   ListActivitiesQuery,
   ListLeadSourcesQuery,
   ListLeadsQuery,
+  ResponseTimeQuery,
   UpdateLeadInput,
   UpdateLeadSourceInput,
   UpdateLeadStageInput,
@@ -195,6 +201,30 @@ export async function createActivity(req: Request, res: Response): Promise<void>
 export async function getFunnel(req: Request, res: Response): Promise<void> {
   const report = await funnelService.getFunnel(currentUser(req), query<AnalyticsQuery>(req));
   sendSuccess(res, report);
+}
+
+/** GET /api/leads/leakage */
+export async function getLeakageReport(req: Request, res: Response): Promise<void> {
+  const report = await leakageService.getLeakageReport(currentUser(req), query<LeakageQuery>(req));
+  sendSuccess(res, report);
+}
+
+/** GET /api/leads/response-times */
+export async function getResponseTimeReport(req: Request, res: Response): Promise<void> {
+  const report = await responseTimeService.getResponseTimeReport(
+    currentUser(req),
+    query<ResponseTimeQuery>(req),
+  );
+  sendSuccess(res, report);
+}
+
+/** GET /api/leads/follow-ups */
+export async function getFollowUpDashboard(req: Request, res: Response): Promise<void> {
+  const dashboard = await followUpService.getFollowUpDashboard(
+    currentUser(req),
+    query<FollowUpQuery>(req),
+  );
+  sendSuccess(res, dashboard);
 }
 
 // ---------------------------------------------------------------------------

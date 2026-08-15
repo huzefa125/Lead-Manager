@@ -2,12 +2,14 @@ import {
   LeadStatus,
   Prisma,
   type LeadActivity,
+  type LeadActivityDirection,
+  type LeadActivityType,
   type LeadChannel,
   type LeadSource,
   type LeadStage,
 } from '@prisma/client';
 import { prisma } from '../config/prisma';
-import { DEFAULT_SOURCES, DEFAULT_STAGES } from './lead.constants';
+import { CONVERSATION_ACTIVITY_TYPES, DEFAULT_SOURCES, DEFAULT_STAGES } from './lead.constants';
 
 /** All lead-engine table access. Nothing above this file writes SQL. */
 
@@ -672,4 +674,128 @@ export async function countByStage(
     count: row._count._all,
     value: Number(row._sum.estimatedValue ?? 0),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Leakage
+// ---------------------------------------------------------------------------
+
+/**
+ * Every lead matching a leakage report's filters, with the relations the
+ * rule engine needs. Unpaginated on purpose: a leakage sweep has to see every
+ * candidate to count correctly, not just one page of them.
+ */
+export async function listLeadsForLeakage(
+  where: Prisma.LeadWhereInput,
+): Promise<LeadWithRelations[]> {
+  return prisma.lead.findMany({ where, include: leadInclude });
+}
+
+/**
+ * The timestamp each lead most recently changed stage, keyed by lead id.
+ *
+ * Prisma has no "latest row per group" query, so this is the one place the
+ * lead engine reaches for raw SQL. `DISTINCT ON` is Postgres-specific, which
+ * this app already commits to elsewhere (`DECIMAL`, the migration tooling).
+ * Values are bound through `Prisma.sql`/`Prisma.join`, never interpolated, so
+ * this carries no injection risk despite being raw text.
+ *
+ * A lead absent from the result never had a `STAGE_CHANGED` entry — the
+ * caller falls back to `capturedAt` for those.
+ */
+export async function latestStageChangeByLead(
+  organizationId: string,
+  leadIds: string[],
+): Promise<Map<string, Date>> {
+  if (leadIds.length === 0) return new Map();
+
+  // Postgres has no implicit cast from the driver's text-typed bind parameters
+  // to `uuid`, so the uuid columns are cast to text for comparison instead.
+  const rows = await prisma.$queryRaw<{ leadId: string; occurredAt: Date }[]>(Prisma.sql`
+    SELECT DISTINCT ON (lead_id) lead_id AS "leadId", occurred_at AS "occurredAt"
+    FROM lead_activities
+    WHERE organization_id::text = ${organizationId}
+      AND type = 'STAGE_CHANGED'
+      AND lead_id::text IN (${Prisma.join(leadIds)})
+    ORDER BY lead_id, occurred_at DESC
+  `);
+
+  return new Map(rows.map((row) => [row.leadId, row.occurredAt]));
+}
+
+export interface SourceCaptureStats {
+  id: string;
+  key: string;
+  name: string;
+  channel: LeadChannel;
+  isActive: boolean;
+  lastCapturedAt: Date | null;
+  totalCaptured: number;
+}
+
+/**
+ * Every source in the organization, with when it last captured a lead —
+ * deliberately independent of a report's own date filters. "Has this channel
+ * gone quiet" is an absolute-time question; folding a report's
+ * `capturedFrom`/`capturedTo` into it would make an old date filter look
+ * exactly like a broken integration.
+ */
+export async function sourceCaptureStats(organizationId: string): Promise<SourceCaptureStats[]> {
+  const [sources, captures] = await Promise.all([
+    prisma.leadSource.findMany({ where: { organizationId } }),
+    prisma.lead.groupBy({
+      by: ['sourceId'],
+      where: { organizationId },
+      _max: { capturedAt: true },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const statsBySourceId = new Map(captures.map((row) => [row.sourceId, row]));
+
+  return sources.map((source) => {
+    const stats = statsBySourceId.get(source.id);
+    return {
+      id: source.id,
+      key: source.key,
+      name: source.name,
+      channel: source.channel,
+      isActive: source.isActive,
+      lastCapturedAt: stats?._max.capturedAt ?? null,
+      totalCaptured: stats?._count._all ?? 0,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Response times
+// ---------------------------------------------------------------------------
+
+export interface ConversationActivityRow {
+  leadId: string;
+  type: LeadActivityType;
+  direction: LeadActivityDirection;
+  occurredAt: Date;
+}
+
+/**
+ * The conversation-relevant activities for a set of leads, ordered so a
+ * caller can scan each lead's timeline forward in one pass.
+ *
+ * Three of the six response-time metrics — reply → salesperson response,
+ * meeting → follow-up, quote → follow-up — ask "what happened next", which a
+ * milestone column cannot answer: `lastFollowUpAt` is the *latest* follow-up,
+ * not the one that came right after a specific meeting or quote. There is no
+ * SQL aggregate for "first row after timestamp X per lead", so the rows come
+ * back raw and the scan happens in the service layer, the same trade-off
+ * `responseTimes()` above already makes for milestone-to-milestone gaps.
+ */
+export async function listConversationActivities(
+  where: Prisma.LeadWhereInput,
+): Promise<ConversationActivityRow[]> {
+  return prisma.leadActivity.findMany({
+    where: { lead: where, type: { in: CONVERSATION_ACTIVITY_TYPES } },
+    select: { leadId: true, type: true, direction: true, occurredAt: true },
+    orderBy: [{ leadId: 'asc' }, { occurredAt: 'asc' }],
+  });
 }
