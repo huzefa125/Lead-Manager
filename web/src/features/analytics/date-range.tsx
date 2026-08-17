@@ -33,19 +33,34 @@ export interface ResolvedRange {
   capturedTo?: string
 }
 
-/** `all` returns an empty object, which the API reads as "no bound". */
+/**
+ * `all` returns an empty object, which the API reads as "no bound".
+ *
+ * The boundary is floored to midnight, and that is load-bearing rather than
+ * cosmetic. This runs during render, and its result becomes part of a query
+ * key: if it returned `now`, every render would produce a boundary a few
+ * milliseconds later, which is a new key, which refetches, which re-renders —
+ * an infinite request loop that a rate limiter eventually answers with 429.
+ *
+ * Flooring makes the result stable for the whole day, so the key settles and
+ * the cache is actually reusable. It is also the more honest reading of "the
+ * last 30 days" for a report: whole days, not a window that slides by
+ * milliseconds while you look at it.
+ */
 export function resolveRange(preset: RangePreset): ResolvedRange {
-  const now = new Date()
-
   if (preset === 'all') return {}
 
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
   if (preset === 'mtd') {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1)
-    return { capturedFrom: start.toISOString() }
+    return { capturedFrom: new Date(now.getFullYear(), now.getMonth(), 1).toISOString() }
   }
 
   const days = DAYS[preset] ?? 30
-  const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
+  const start = new Date(startOfToday)
+  start.setDate(start.getDate() - days)
+
   return { capturedFrom: start.toISOString() }
 }
 

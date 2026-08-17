@@ -35,7 +35,7 @@ export function RouteError({ error }: { error: Error }) {
               <RotateCw className="size-4" />
               Try again
             </Button>
-            <Button render={<Link to="/" />}>Go to dashboard</Button>
+            <Button nativeButton={false} render={<Link to="/" />}>Go to dashboard</Button>
           </div>
         </EmptyContent>
       </Empty>

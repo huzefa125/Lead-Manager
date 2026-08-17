@@ -18,7 +18,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { DateRangeFilter, RANGE_PRESETS, resolveRange } from '@/features/analytics/date-range'
 import { FunnelChart } from '@/features/analytics/funnel-chart'
 import { useFollowUps, useFunnel, useLeakage } from '@/features/analytics/queries'
-import { formatCurrency, formatHours, formatNumber, formatPercent } from '@/lib/format'
+import {
+  formatAmount,
+  formatCurrency,
+  formatHours,
+  formatNumber,
+  formatPercent,
+} from '@/lib/format'
 
 const searchSchema = z.object({
   range: z.enum(RANGE_PRESETS).default('30d'),
@@ -72,8 +78,8 @@ function DashboardPage() {
           />
           <StatCard
             label="Pipeline value"
-            value={formatCurrency(totals?.estimatedValue)}
-            hint={`${formatCurrency(totals?.wonValue)} won`}
+            value={formatAmount(totals?.estimatedValue)}
+            hint={`${formatAmount(totals?.wonValue)} won`}
             icon={Wallet}
             loading={funnel.isPending}
           />
@@ -131,6 +137,9 @@ function DashboardPage() {
                   <Button
                     variant="outline"
                     size="sm"
+                    // Rendering as an anchor, so the native-button semantics
+                    // Base UI would otherwise keep have to be turned off.
+                    nativeButton={false}
                     render={<Link to="/leakage" search={{ range }} />}
                   >
                     See why
@@ -210,7 +219,7 @@ function DashboardPage() {
                     </p>
                     <p className="mt-1 text-xl font-semibold">{formatNumber(entry.count)}</p>
                     <p className="truncate text-xs text-muted-foreground">
-                      {formatCurrency(entry.value)}
+                      {formatAmount(entry.value)}
                     </p>
                   </Link>
                 ))}

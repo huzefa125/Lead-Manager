@@ -13,6 +13,14 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppFollowUpsRouteImport } from './routes/_app/follow-ups'
+import { Route as AppLeakageRouteImport } from './routes/_app/leakage'
+import { Route as AppResponseTimesRouteImport } from './routes/_app/response-times'
+import { Route as AppLeadsIndexRouteImport } from './routes/_app/leads/index'
+import { Route as AppLeadsLeadIdRouteImport } from './routes/_app/leads/$leadId'
+import { Route as AppSettingsPipelineRouteImport } from './routes/_app/settings/pipeline'
+import { Route as AppSettingsRolesRouteImport } from './routes/_app/settings/roles'
+import { Route as AppSettingsTeamRouteImport } from './routes/_app/settings/team'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -33,30 +41,129 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppFollowUpsRoute = AppFollowUpsRouteImport.update({
+  id: '/follow-ups',
+  path: '/follow-ups',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLeakageRoute = AppLeakageRouteImport.update({
+  id: '/leakage',
+  path: '/leakage',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppResponseTimesRoute = AppResponseTimesRouteImport.update({
+  id: '/response-times',
+  path: '/response-times',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLeadsIndexRoute = AppLeadsIndexRouteImport.update({
+  id: '/leads/',
+  path: '/leads/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLeadsLeadIdRoute = AppLeadsLeadIdRouteImport.update({
+  id: '/leads/$leadId',
+  path: '/leads/$leadId',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsPipelineRoute = AppSettingsPipelineRouteImport.update({
+  id: '/settings/pipeline',
+  path: '/settings/pipeline',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRolesRoute = AppSettingsRolesRouteImport.update({
+  id: '/settings/roles',
+  path: '/settings/roles',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsTeamRoute = AppSettingsTeamRouteImport.update({
+  id: '/settings/team',
+  path: '/settings/team',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/follow-ups': typeof AppFollowUpsRoute
+  '/leakage': typeof AppLeakageRoute
+  '/response-times': typeof AppResponseTimesRoute
+  '/leads/$leadId': typeof AppLeadsLeadIdRoute
+  '/settings/pipeline': typeof AppSettingsPipelineRoute
+  '/settings/roles': typeof AppSettingsRolesRoute
+  '/settings/team': typeof AppSettingsTeamRoute
+  '/leads/': typeof AppLeadsIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/follow-ups': typeof AppFollowUpsRoute
+  '/leakage': typeof AppLeakageRoute
+  '/response-times': typeof AppResponseTimesRoute
   '/': typeof AppIndexRoute
+  '/leads/$leadId': typeof AppLeadsLeadIdRoute
+  '/settings/pipeline': typeof AppSettingsPipelineRoute
+  '/settings/roles': typeof AppSettingsRolesRoute
+  '/settings/team': typeof AppSettingsTeamRoute
+  '/leads': typeof AppLeadsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/_app/follow-ups': typeof AppFollowUpsRoute
+  '/_app/leakage': typeof AppLeakageRoute
+  '/_app/response-times': typeof AppResponseTimesRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/leads/$leadId': typeof AppLeadsLeadIdRoute
+  '/_app/settings/pipeline': typeof AppSettingsPipelineRoute
+  '/_app/settings/roles': typeof AppSettingsRolesRoute
+  '/_app/settings/team': typeof AppSettingsTeamRoute
+  '/_app/leads/': typeof AppLeadsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/register'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/register'
+    | '/follow-ups'
+    | '/leakage'
+    | '/response-times'
+    | '/leads/$leadId'
+    | '/settings/pipeline'
+    | '/settings/roles'
+    | '/settings/team'
+    | '/leads/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/register' | '/'
-  id: '__root__' | '/_app' | '/login' | '/register' | '/_app/'
+  to:
+    | '/login'
+    | '/register'
+    | '/follow-ups'
+    | '/leakage'
+    | '/response-times'
+    | '/'
+    | '/leads/$leadId'
+    | '/settings/pipeline'
+    | '/settings/roles'
+    | '/settings/team'
+    | '/leads'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/login'
+    | '/register'
+    | '/_app/follow-ups'
+    | '/_app/leakage'
+    | '/_app/response-times'
+    | '/_app/'
+    | '/_app/leads/$leadId'
+    | '/_app/settings/pipeline'
+    | '/_app/settings/roles'
+    | '/_app/settings/team'
+    | '/_app/leads/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -95,15 +202,87 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/follow-ups': {
+      id: '/_app/follow-ups'
+      path: '/follow-ups'
+      fullPath: '/follow-ups'
+      preLoaderRoute: typeof AppFollowUpsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/leakage': {
+      id: '/_app/leakage'
+      path: '/leakage'
+      fullPath: '/leakage'
+      preLoaderRoute: typeof AppLeakageRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/response-times': {
+      id: '/_app/response-times'
+      path: '/response-times'
+      fullPath: '/response-times'
+      preLoaderRoute: typeof AppResponseTimesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/leads/': {
+      id: '/_app/leads/'
+      path: '/leads'
+      fullPath: '/leads/'
+      preLoaderRoute: typeof AppLeadsIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/leads/$leadId': {
+      id: '/_app/leads/$leadId'
+      path: '/leads/$leadId'
+      fullPath: '/leads/$leadId'
+      preLoaderRoute: typeof AppLeadsLeadIdRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/pipeline': {
+      id: '/_app/settings/pipeline'
+      path: '/settings/pipeline'
+      fullPath: '/settings/pipeline'
+      preLoaderRoute: typeof AppSettingsPipelineRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/roles': {
+      id: '/_app/settings/roles'
+      path: '/settings/roles'
+      fullPath: '/settings/roles'
+      preLoaderRoute: typeof AppSettingsRolesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/team': {
+      id: '/_app/settings/team'
+      path: '/settings/team'
+      fullPath: '/settings/team'
+      preLoaderRoute: typeof AppSettingsTeamRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
+  AppFollowUpsRoute: typeof AppFollowUpsRoute
+  AppLeakageRoute: typeof AppLeakageRoute
+  AppResponseTimesRoute: typeof AppResponseTimesRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppLeadsLeadIdRoute: typeof AppLeadsLeadIdRoute
+  AppSettingsPipelineRoute: typeof AppSettingsPipelineRoute
+  AppSettingsRolesRoute: typeof AppSettingsRolesRoute
+  AppSettingsTeamRoute: typeof AppSettingsTeamRoute
+  AppLeadsIndexRoute: typeof AppLeadsIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppFollowUpsRoute: AppFollowUpsRoute,
+  AppLeakageRoute: AppLeakageRoute,
+  AppResponseTimesRoute: AppResponseTimesRoute,
   AppIndexRoute: AppIndexRoute,
+  AppLeadsLeadIdRoute: AppLeadsLeadIdRoute,
+  AppSettingsPipelineRoute: AppSettingsPipelineRoute,
+  AppSettingsRolesRoute: AppSettingsRolesRoute,
+  AppSettingsTeamRoute: AppSettingsTeamRoute,
+  AppLeadsIndexRoute: AppLeadsIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

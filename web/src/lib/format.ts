@@ -23,6 +23,18 @@ export function formatNumber(value: number | null | undefined): string {
   return new Intl.NumberFormat().format(value)
 }
 
+/**
+ * Money the API reports without a currency — funnel totals, at-risk values,
+ * stage occupancy. Those figures are summed across whatever currencies a
+ * tenant's leads carry, so the server names no code and neither do we:
+ * stamping a symbol on them would be a guess, and a wrong one for anybody not
+ * billing in it. The label beside the figure says what it is.
+ */
+export function formatAmount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
 /** The API returns ratios (0.42); the UI shows percentages. */
 export function formatPercent(ratio: number | null | undefined, fractionDigits = 1): string {
   if (ratio === null || ratio === undefined) return '—'
@@ -97,6 +109,32 @@ export function humanize(value: string | null | undefined): string {
     .split('_')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ')
+}
+
+/**
+ * The `advanced` array names the milestone *columns* a write moved
+ * (`firstContactAt`), which is the server's vocabulary, not a salesperson's.
+ * Unknown keys fall back to de-camel-casing so a milestone added later reads
+ * acceptably instead of leaking a field name verbatim.
+ */
+const MILESTONE_LABELS: Record<string, string> = {
+  assignedAt: 'assigned',
+  firstContactAt: 'contacted',
+  firstReplyAt: 'replied',
+  meetingBookedAt: 'meeting booked',
+  quotationSentAt: 'quotation sent',
+  lastFollowUpAt: 'followed up',
+  closedAt: 'closed',
+}
+
+export function milestoneLabel(key: string): string {
+  return (
+    MILESTONE_LABELS[key] ??
+    key
+      .replace(/At$/, '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+  )
 }
 
 export function initials(name: string | null, email: string): string {

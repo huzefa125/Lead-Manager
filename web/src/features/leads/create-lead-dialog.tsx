@@ -173,6 +173,11 @@ export function CreateLeadDialog({
               <Select
                 value={form.watch('sourceId') ?? null}
                 onValueChange={(value) => form.setValue('sourceId', (value as string) ?? undefined)}
+                // Maps the selected id back to a name for the trigger.
+                items={(sources.data ?? []).map((source) => ({
+                  value: source.id,
+                  label: source.name,
+                }))}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Pick a source" />

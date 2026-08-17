@@ -1,5 +1,4 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
 import { z } from 'zod'
@@ -25,7 +24,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
 import { useLogActivity } from '@/features/leads/queries'
 import { ApiError } from '@/lib/api'
-import { ACTIVITY_LABELS } from '@/lib/format'
+import { ACTIVITY_LABELS, milestoneLabel } from '@/lib/format'
 import { LOGGABLE_ACTIVITY_TYPES } from '@/types/api'
 import type { LeadActivityDirection, LeadActivityType } from '@/types/api'
 
@@ -92,7 +91,9 @@ export function LogActivityDialog({
           // beats leaving them to spot a number changing elsewhere.
           toast.success(
             result.advanced.length > 0
-              ? `Logged — this lead now counts as ${result.advanced.join(', ')}`
+              ? `Logged — this lead now counts as ${result.advanced
+                  .map(milestoneLabel)
+                  .join(', ')}`
               : 'Activity logged',
           )
           form.reset()
@@ -128,6 +129,10 @@ export function LogActivityDialog({
                 <Select
                   value={form.watch('type')}
                   onValueChange={(value) => form.setValue('type', value as string)}
+                  items={LOGGABLE_ACTIVITY_TYPES.map((type) => ({
+                    value: type,
+                    label: ACTIVITY_LABELS[type],
+                  }))}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
@@ -147,6 +152,10 @@ export function LogActivityDialog({
                 <Select
                   value={direction}
                   onValueChange={(value) => form.setValue('direction', value as string)}
+                  items={DIRECTIONS.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  }))}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
@@ -203,10 +212,4 @@ export function LogActivityDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-/** Small helper so the detail screen only tracks one piece of state. */
-export function useDialog(): [boolean, (open: boolean) => void, () => void] {
-  const [open, setOpen] = useState(false)
-  return [open, setOpen, () => setOpen(true)]
 }

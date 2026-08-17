@@ -108,12 +108,20 @@ export type QueryParams = Record<
 /**
  * The server reads repeatable filters as comma-separated (`?status=WON,LOST`)
  * and coerces dates from ISO strings.
+ *
+ * `false` is dropped rather than serialized, and that is not a shortcut. Every
+ * boolean the API takes is parsed with zod's `z.coerce.boolean()`, which is
+ * `Boolean(value)` over the raw query string — so the string `"false"` arrives
+ * as `true`, the exact opposite of what was sent. Absence is the only way to
+ * express false, and each of those schemas already declares `.default(false)`.
+ * Sending `excludeSystem=false` is what made a lead's timeline render empty:
+ * the server read it as "hide system entries" and hid the only entry there was.
  */
 export function toQueryString(query: QueryParams): string {
   const params = new URLSearchParams()
 
   for (const [key, value] of Object.entries(query)) {
-    if (value === undefined || value === null || value === '') continue
+    if (value === undefined || value === null || value === '' || value === false) continue
 
     if (Array.isArray(value)) {
       if (value.length > 0) params.set(key, value.join(','))

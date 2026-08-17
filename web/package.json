@@ -1,11 +1,13 @@
 {
-  "name": "web",
+  "name": "lead-manager-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "3.0.0",
+  "description": "Frontend for the lead manager API: pipeline, journey tracking and leakage reporting (React + TanStack + shadcn/ui)",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
     "lint": "oxlint",
     "preview": "vite preview"
   },
