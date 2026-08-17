@@ -5,6 +5,7 @@ import {
   Globe,
   Mail,
   MessageSquarePlus,
+  Pencil,
   Phone,
   Trash2,
 } from 'lucide-react'
@@ -35,6 +36,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { useLeadStages } from '@/features/catalog/queries'
+import { EditLeadDialog } from '@/features/leads/edit-lead-dialog'
 import { JourneyTrack } from '@/features/leads/journey-track'
 import { ChannelBadge, StatusBadge } from '@/features/leads/lead-badges'
 import { LeadTimeline } from '@/features/leads/lead-timeline'
@@ -70,6 +72,7 @@ function LeadDetailPage() {
   const deleteLead = useDeleteLead()
 
   const [logOpen, setLogOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [lostFor, setLostFor] = useState<string | null>(null)
   const [lostReason, setLostReason] = useState('')
@@ -144,10 +147,16 @@ function LeadDetailPage() {
               Leads
             </Button>
             {canUpdate && (
-              <Button size="sm" onClick={() => setLogOpen(true)}>
-                <MessageSquarePlus className="size-4" />
-                Log activity
-              </Button>
+              <>
+                <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+                  <Pencil className="size-4" />
+                  Edit
+                </Button>
+                <Button size="sm" onClick={() => setLogOpen(true)}>
+                  <MessageSquarePlus className="size-4" />
+                  Log activity
+                </Button>
+              </>
             )}
           </>
         }
@@ -345,7 +354,10 @@ function LeadDetailPage() {
       </div>
 
       {canUpdate && (
-        <LogActivityDialog leadId={leadId} open={logOpen} onOpenChange={setLogOpen} />
+        <>
+          <LogActivityDialog leadId={leadId} open={logOpen} onOpenChange={setLogOpen} />
+          <EditLeadDialog lead={data} open={editOpen} onOpenChange={setEditOpen} />
+        </>
       )}
 
       {/* Moving to a lost stage needs a reason — the server rejects it otherwise,
