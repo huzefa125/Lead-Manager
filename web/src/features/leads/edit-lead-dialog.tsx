@@ -152,6 +152,10 @@ export function EditLeadDialog({
           message: 'This field cannot be emptied — enter a value, or leave it as it was.',
         })
       }
+      // `shouldFocusError` only covers errors the resolver produced, so a
+      // manual `setError` leaves the offending field wherever it is — often
+      // scrolled out of this dialog, making Save look like it did nothing.
+      form.setFocus(blanked[0])
       return
     }
 
