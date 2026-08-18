@@ -9,6 +9,10 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "dev:db": "node scripts/dev-db.mjs start",
+    "dev:db:stop": "node scripts/dev-db.mjs stop",
+    "dev:db:reset": "node scripts/dev-db.mjs reset",
+    "dev:api": "node scripts/dev-api.mjs",
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",

@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { Lock, ShieldCheck } from 'lucide-react'
+import { Lock, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { PageHeader } from '@/components/page-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,7 +17,14 @@ import {
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
-import { usePermissions, useRoles, useSetRolePermissions } from '@/features/rbac/queries'
+import { CreateRoleDialog } from '@/features/rbac/create-role-dialog'
+import {
+  useDeleteRole,
+  usePermissions,
+  useRoles,
+  useSetRolePermissions,
+  useUsers,
+} from '@/features/rbac/queries'
 import { ApiError } from '@/lib/api'
 import { humanize } from '@/lib/format'
 import { Permissions, hasPermission } from '@/lib/permissions'
@@ -29,15 +37,48 @@ export const Route = createFileRoute('/_app/settings/roles')({
 function RolesPage() {
   const { user } = Route.useRouteContext()
   const roles = useRoles()
+  const users = useUsers({ limit: 100 })
+  const deleteRole = useDeleteRole()
+
   const [editing, setEditing] = useState<PublicRoleDetail | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState<PublicRoleDetail | null>(null)
 
   const canEdit = hasPermission(user.permissions, Permissions.ROLE_UPDATE)
+  const canCreate = hasPermission(user.permissions, Permissions.ROLE_CREATE)
+  const canDelete = hasPermission(user.permissions, Permissions.ROLE_DELETE)
+
+  /** How many people hold each role — the server refuses to delete one still in use. */
+  const holdersOf = (roleName: string) =>
+    (users.data?.users ?? []).filter((member) =>
+      member.roles.some((role) => role.name === roleName),
+    ).length
+
+  /** Mirrors `role.service.deleteRole`. */
+  const blockedReason = (role: PublicRoleDetail) => {
+    if (role.isSystem) return 'This is a system role and cannot be deleted.'
+
+    const holders = holdersOf(role.name)
+    if (holders > 0) {
+      return `${holders} user(s) hold this role. Remove those assignments before deleting it.`
+    }
+
+    return null
+  }
 
   return (
     <>
       <PageHeader
         title="Roles"
         description="Permissions are rows, not code — a role grants whatever you tick."
+        actions={
+          canCreate && (
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Plus className="size-4" />
+              New role
+            </Button>
+          )
+        }
       />
 
       <div className="grid gap-4 p-4 md:grid-cols-2 xl:grid-cols-3">
@@ -80,11 +121,23 @@ function RolesPage() {
                 )}
               </div>
 
-              {canEdit && (
-                <Button variant="outline" size="sm" onClick={() => setEditing(role)}>
-                  Edit permissions
-                </Button>
-              )}
+              <div className="flex items-center gap-2">
+                {canEdit && (
+                  <Button variant="outline" size="sm" onClick={() => setEditing(role)}>
+                    Edit permissions
+                  </Button>
+                )}
+                {canDelete && !role.isSystem && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Delete ${role.displayName}`}
+                    onClick={() => setDeleting(role)}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                )}
+              </div>
             </CardContent>
           </Card>
         ))}
@@ -93,6 +146,28 @@ function RolesPage() {
       {canEdit && (
         <EditPermissionsDialog role={editing} onClose={() => setEditing(null)} />
       )}
+
+      {canCreate && <CreateRoleDialog open={creating} onOpenChange={setCreating} />}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        title={`Delete the "${deleting?.displayName}" role?`}
+        description="The role and its grants are removed permanently."
+        blockedReason={deleting ? blockedReason(deleting) : null}
+        pending={deleteRole.isPending}
+        onConfirm={() =>
+          deleting &&
+          deleteRole.mutate(deleting.id, {
+            onSuccess: () => {
+              toast.success('Role deleted')
+              setDeleting(null)
+            },
+            onError: (error) =>
+              toast.error(error instanceof ApiError ? error.message : 'Could not delete the role'),
+          })
+        }
+      />
     </>
   )
 }
